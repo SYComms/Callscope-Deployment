@@ -276,8 +276,18 @@ def zoho_send_mail(module, record_id, payload):
 
 
 def zoho_add_note(account_id, title, content):
-    return _check(zoho("POST", f"/Accounts/{account_id}/Notes",
-                       json={"data": [{"Note_Title": title, "Note_Content": content}]}))
+    """Adds a note to the account, then reads the account's notes back to confirm it is really there."""
+    made = _check(zoho("POST", f"/Accounts/{account_id}/Notes", json={"data": [{
+        "Note_Title": title, "Note_Content": content,
+        "Parent_Id": {"module": {"api_name": "Accounts"}, "id": str(account_id)}}]}))
+    note_id = str((made.get("details") or {}).get("id") or "")
+    if not note_id:
+        raise ZohoError("Zoho accepted the note but did not return a note ID.")
+    recent = zoho("GET", f"/Accounts/{account_id}/Notes",
+                  params={"fields": "Note_Title,Created_Time", "per_page": 20, "sort_by": "Created_Time", "sort_order": "desc"})
+    if note_id not in [str(n.get("id")) for n in recent.get("data", [])]:
+        raise ZohoError(f"The note was created (ID {note_id}) but is not showing on the account.")
+    return note_id
 
 
 def zoho_attach(account_id, name, data):
@@ -339,6 +349,41 @@ def join_url(slug, domain, path_or_url):
     if p.lower().startswith("http"):
         return p
     return f"https://{slug}.{domain.strip().strip('/')}/{p.strip('/')}/".replace("//", "/").replace("https:/", "https://")
+
+
+def parse_ranges(text):
+    """'1000-1003, 5000' -> [(1000, 1003), (5000, 5000)] plus warnings."""
+    out, warns = [], []
+    for part in re.split(r"[,\n;]+", text or ""):
+        part = part.strip()
+        if not part:
+            continue
+        m = re.fullmatch(r"(\d+)\s*(?:-|–|to)\s*(\d+)", part)
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            out.append((min(a, b), max(a, b)))
+        elif part.isdigit():
+            out.append((int(part), int(part)))
+        else:
+            warns.append(f"Couldn't read \"{part}\" - use numbers or ranges like 1000-1020.")
+    return out, warns
+
+
+def describe_blocks(exts):
+    """Summarises the runs of consecutive extensions, e.g. '1000-1003 (4), 2000-2010 (11)'."""
+    nums = sorted({int(e) for e in exts})
+    blocks, start, prev = [], None, None
+    for n in nums:
+        if start is None:
+            start = prev = n
+        elif n == prev + 1:
+            prev = n
+        else:
+            blocks.append((start, prev)); start = prev = n
+    if start is not None:
+        blocks.append((start, prev))
+    bits = [f"{a}-{b} ({b - a + 1})" if b > a else f"{a} (1)" for a, b in blocks]
+    return ", ".join(bits[:30]) + (f" and {len(bits) - 30} more groups" if len(bits) > 30 else "")
 
 
 def parse_extensions(ranges_text, named_text):
@@ -572,10 +617,27 @@ with left:
                 st.error(csv_error)
         picked = []
         if csv_rows:
-            st.caption(f"{len(csv_rows)} extensions found in {up.name}. Untick any that shouldn't get a login "
-                       "(spare lines, meeting rooms) and correct names if needed.")
+            total_in_file = len(csv_rows)
+            keep_text = st.text_input(
+                "Only use these extension ranges (leave blank to use the whole file)", key="keep_ranges",
+                placeholder="e.g. 1000-1003, 5000-5002",
+                help="For shared (tenanted) phone systems, where the export also holds other customers' extensions. "
+                     "Only extensions inside these ranges are used.")
+            st.caption("In this file: " + describe_blocks([r["Extension"] for r in csv_rows]))
+            keep, keep_warns = parse_ranges(keep_text)
+            for w in keep_warns:
+                st.warning(w)
+            if keep:
+                csv_rows = [r for r in csv_rows if any(a <= int(r["Extension"]) <= b for a, b in keep)]
+                if not csv_rows:
+                    st.warning("No extensions in the file fall inside those ranges.")
+        if csv_rows:
+            domains = sorted({r["Email"].split("@")[1].lower() for r in csv_rows if r.get("Email")})
+            st.caption(f"Using {len(csv_rows)} of {total_in_file} extensions from {up.name}."
+                       + (f" Email domains: {', '.join(domains[:8])}{' and more' if len(domains) > 8 else ''}." if domains else "")
+                       + " Untick any that shouldn't get a login (spare lines, meeting rooms) and correct names if needed.")
             edited = st.data_editor(
-                csv_rows, key=f"ext_editor_{abs(hash(up.getvalue()))}", hide_index=True, num_rows="fixed",
+                csv_rows, key=f"ext_editor_{abs(hash((up.getvalue(), keep_text)))}", hide_index=True, num_rows="fixed",
                 height=min(38 + 35 * len(csv_rows), 420), **FULL_WIDTH,
                 column_config={
                     "Include": st.column_config.CheckboxColumn("Include", width="small"),
@@ -806,15 +868,18 @@ with st.container(key="card-send"):
                         zoho_send_mail("Contacts", contact["id"], payload)
                         log.append(f"Email sent from {sender['email']} with {len(ids)} attachment(s).")
                         acc_id = ss.zoho_account["id"]
-                        if add_note:
-                            st.write("Adding the note")
-                            zoho_add_note(acc_id, f"{BRAND} onboarding pack sent",
-                                          f"{BRAND} onboarding pack emailed to {contact_name} ({contact_email}) on "
-                                          f"{dt.datetime.now().strftime('%d/%m/%Y %H:%M')} from {sender['email']}.\n"
-                                          f"Site: https://{slug}.{DEFAULT_DOMAIN}/\n"
-                                          f"Documents: {', '.join(FILES[k][1] for k in attach_keys)}\n"
-                                          f"Staff extensions listed: {len(ext_pairs)}")
-                            log.append("Note added to the account.")
+                        st.write("Adding the note to the account")
+                        try:
+                            note_id = zoho_add_note(
+                                acc_id, NOTE_TITLE,
+                                f"{BRAND} onboarding sent to {contact_name} ({contact_email}) on "
+                                f"{dt.datetime.now().strftime('%d/%m/%Y %H:%M')} from {sender['email']}.\n"
+                                f"Site: https://{slug}.{DEFAULT_DOMAIN}/\n"
+                                f"Documents: {', '.join(FILES[k][1] for k in attach_keys)}\n"
+                                f"Staff extensions listed: {len(ext_pairs)}")
+                            log.append(f"Note \"{NOTE_TITLE}\" added to the account and confirmed (note ID {note_id}).")
+                        except Exception as note_err:
+                            log.append(f"NOTE NOT ADDED - Zoho said: {note_err}")
                         if file_docs:
                             st.write("Saving the PDFs on the account")
                             for k in attach_keys:
