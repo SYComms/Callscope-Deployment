@@ -37,7 +37,7 @@ EMAIL_SIGN_OFF = "The Call Scope Team"
 DEFAULT_DOMAIN = "sycomms.cloud"        # customer sites live at https://<slug>.<domain>/
 RECORDINGS_PATH = "/recordings/"
 STAFF_PATH = "/ai/"
-DEFAULT_MANAGER_PATH = ""               # e.g. "/dashboard/" - blank = type it in per customer
+MANAGER_PATH = "/reports/usage.html"    # manager dashboard
 PW_PATTERN = "{slug}{ext}"              # staff password rule
 MAX_EXTENSIONS = 2000
 CARD_LIMIT = 400                        # most login cards we will lay out
@@ -368,7 +368,9 @@ def join_url(slug, domain, path_or_url):
         return ""
     if p.lower().startswith("http"):
         return p
-    return f"https://{slug}.{domain.strip().strip('/')}/{p.strip('/')}/".replace("//", "/").replace("https:/", "https://")
+    p = p.strip("/")
+    tail = "" if "." in p.split("/")[-1] else "/"      # no trailing slash after a page like usage.html
+    return f"https://{slug}.{domain.strip().strip('/')}/{p}{tail}"
 
 
 def parse_ranges(text):
@@ -609,15 +611,14 @@ with left:
         rec_pass = c2.text_input("Admin password", key="rec_pass").strip()
 
         st.markdown("**Manager dashboard**")
-        c1, c2, c3 = st.columns([2, 1, 1])
-        mgr_in = c1.text_input("Dashboard address", value=DEFAULT_MANAGER_PATH, key="mgr_in",
-                               placeholder="/dashboard/  or a full https:// address",
-                               help="Type just the ending (e.g. /dashboard/) or paste the full address. Leave blank to leave the dashboard out of the pack.")
-        mgr_user = c2.text_input("Username (if any)", key="mgr_user").strip()
-        mgr_pass = c3.text_input("Password", key="mgr_pass").strip()
-        mgr_url = join_url(show_slug, domain, mgr_in)
-        if mgr_url:
+        include_mgr = st.toggle("Include the manager dashboard in the pack", value=True, key="w_mgr")
+        mgr_url = join_url(show_slug, domain, MANAGER_PATH) if include_mgr else ""
+        mgr_user = mgr_pass = ""
+        if include_mgr:
             render_html(f'<div class="pe-url">{esc(mgr_url)}</div>')
+            c1, c2 = st.columns(2)
+            mgr_user = c1.text_input("Username (if any)", key="mgr_user").strip()
+            mgr_pass = c2.text_input("Dashboard password", key="mgr_pass").strip()
 
         st.markdown("**Staff AI portal** - everyone")
         render_html(f'<div class="pe-url">{esc(ai_url)}</div>')
