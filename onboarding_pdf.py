@@ -22,9 +22,9 @@ CW = W - 2 * M              # content width
 
 NAVY = HexColor("#0A0E1A")
 NAVY_2 = HexColor("#161F33")
-INDIGO = HexColor("#5B63F5")
-INDIGO_SOFT = HexColor("#ECEDFF")
-CYAN = HexColor("#38D6F5")
+INDIGO = HexColor("#7971EA")      # Call Scope logo purple
+INDIGO_SOFT = HexColor("#EEEDFD")
+CYAN = HexColor("#B3ADF7")        # light purple highlight
 TEXT = HexColor("#1B2333")
 MUTED = HexColor("#5E6A82")
 FAINT = HexColor("#8C98B0")
@@ -107,7 +107,7 @@ class Doc:
         top = H - 42
         if logo:
             try:
-                c.drawImage(logo, M, top - 8, height=26, width=120, preserveAspectRatio=True,
+                c.drawImage(logo, M, top - 12, height=34, width=150, preserveAspectRatio=True,
                             anchor="sw", mask="auto")
             except Exception:
                 logo = None
@@ -152,8 +152,17 @@ class Doc:
         c.setFillColor(NAVY)
         c.rect(0, H - 40, W, 40, stroke=0, fill=1)
         _gradient(c, 0, H - 43, W, 3)
-        c.setFillColor(white); c.setFont(BOLD, 10)
-        c.drawString(M, H - 25, d["brand"])
+        drawn = False
+        if d.get("logo_path"):
+            try:
+                c.drawImage(d["logo_path"], M, H - 31, height=20, width=90, preserveAspectRatio=True,
+                            anchor="sw", mask="auto")
+                drawn = True
+            except Exception:
+                pass
+        if not drawn:
+            c.setFillColor(white); c.setFont(BOLD, 10)
+            c.drawString(M, H - 25, d["brand"])
         c.setFillColor(HexColor("#B8C1D9")); c.setFont(REG, 9)
         c.drawRightString(W - M, H - 25, f"{self.title}  |  {d['company']}")
         self.y = H - 43 - 30
@@ -572,11 +581,17 @@ def build_login_cards(d):
         c.setFillColor(NAVY); c.rect(x, top - 48, cw, 48, stroke=0, fill=1)
         _gradient(c, x, top - 51, cw, 3)
         c.restoreState()
+        if d.get("logo_path"):
+            try:
+                c.drawImage(d["logo_path"], x + cw - 16 - 70, top - 33, height=17, width=70, preserveAspectRatio=True,
+                            anchor="se", mask="auto")
+            except Exception:
+                pass
         c.setFillColor(CYAN); c.setFont(BOLD, 6.5)
-        c.drawString(x + 16, top - 19, f"{d['brand'].upper()} LOGIN", charSpace=1.2)
+        c.drawString(x + 16, top - 19, "YOUR LOGIN", charSpace=1.2)
         c.setFillColor(white)
         title = name or f"Extension {ext}"
-        c.setFont(BOLD, _fit(c, title, BOLD, 13, cw - 32))
+        c.setFont(BOLD, _fit(c, title, BOLD, 13, cw - 32 - (80 if d.get("logo_path") else 0)))
         c.drawString(x + 16, top - 37, title)
         y = top - 66
         for label, val, link in (("Web address", d["ai_url"], True), ("Username", ext, False), ("Password", pw, False)):
