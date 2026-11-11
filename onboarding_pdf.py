@@ -509,20 +509,33 @@ def build_manager_pack(d):
     return doc.finish()
 
 
-def build_staff_guide(d):
-    doc = Doc(d, f"Your {d['brand']} login", f"Staff quick-start guide for {d['company']}", False)
-    ext, pw = _example(d)
-    doc.para(f"{d['company']} now uses {d['brand']}. You have your own personal login - it takes about a minute "
-             f"to get in. Just follow the three steps below.", size=10.5, color=MUTED, gap=10)
-    doc.step(1, "Open your portal", ["Go to this address in your web browser. It's worth saving as a bookmark."],
-             value=d["ai_url"], link=d["ai_url"])
-    doc.step(2, "Enter your username",
-             [f"Your username is your own extension number - for example {ext}.",
-              "Not sure what your extension is? Ask your manager."])
-    doc.step(3, "Enter your password",
-             [f"Your password is the word \"{d['slug']}\" followed straight away by your extension number - "
-              f"all lower case, no spaces."])
-    doc.formula(d["slug"], ext, d["pw_pattern"])
+def build_staff_guide(d, person=None):
+    """person=(extension, name, password) makes a personal copy with that login filled in."""
+    if person:
+        ext, name, pw = person
+        doc = Doc(d, f"Your {d['brand']} login", f"Personal login for {name}" if name else f"Personal login for extension {ext}", False)
+        first = (name or "").split(" ")[0]
+        doc.para(f"Hi {first}," if first else "Hello,", size=11.5, font=BOLD, gap=4)
+        doc.para(f"{d['company']} now uses {d['brand']}, and your personal login is ready. "
+                 f"It takes about a minute to get in - just follow the three steps below.", size=10.5, color=MUTED, gap=10)
+        doc.step(1, "Open your portal", ["Go to this address in your web browser. It's worth saving as a bookmark."],
+                 value=d["ai_url"], link=d["ai_url"])
+        doc.step(2, "Enter your username", ["Your username is your extension number."], value=ext)
+        doc.step(3, "Enter your password", ["Type it exactly as shown - all lower case, no spaces."], value=pw)
+    else:
+        doc = Doc(d, f"Your {d['brand']} login", f"Staff quick-start guide for {d['company']}", False)
+        ext, pw = _example(d)
+        doc.para(f"{d['company']} now uses {d['brand']}. You have your own personal login - it takes about a minute "
+                 f"to get in. Just follow the three steps below.", size=10.5, color=MUTED, gap=10)
+        doc.step(1, "Open your portal", ["Go to this address in your web browser. It's worth saving as a bookmark."],
+                 value=d["ai_url"], link=d["ai_url"])
+        doc.step(2, "Enter your username",
+                 [f"Your username is your own extension number - for example {ext}.",
+                  "Not sure what your extension is? Ask your manager."])
+        doc.step(3, "Enter your password",
+                 [f"Your password is the word \"{d['slug']}\" followed straight away by your extension number - "
+                  f"all lower case, no spaces."])
+        doc.formula(d["slug"], ext, d["pw_pattern"])
     if d.get("ai_bullets"):
         doc.heading("What you'll find inside")
         doc.bullets(d["ai_bullets"])
