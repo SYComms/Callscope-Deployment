@@ -376,6 +376,56 @@ def parse_extensions(ranges_text, named_text):
     return exts, warns
 
 
+EMAIL_RE = re.compile(r"[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+")
+
+
+def parse_extension_csv(raw):
+    """Reads ONLY extension number, name and email address from a phone-system export.
+    Passwords and every other column are never kept."""
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
+    try:
+        reader = csv.DictReader(io.StringIO(text))
+        cols = {re.sub(r"[^a-z]", "", (c or "").lower()): c for c in (reader.fieldnames or [])}
+    except csv.Error:
+        return [], "That file couldn't be read as a CSV."
+    ext_col = next((cols[k] for k in ("extension", "extensionnumber", "ext", "number", "username") if k in cols), None)
+    if not ext_col:
+        return [], "Couldn't find an 'Extension' column in that file."
+    first = cols.get("firstname")
+    last = cols.get("lastname")
+    full = next((cols[k] for k in ("name", "fullname", "displayname", "calleridname") if k in cols), None)
+    mail = next((cols[k] for k in ("emailaddress", "email", "useremail") if k in cols), None)
+    rows, seen = [], set()
+    for r in reader:
+        ext = (r.get(ext_col) or "").strip()
+        if not ext.isdigit() or ext in seen:
+            continue
+        seen.add(ext)
+        name = " ".join(p for p in ((r.get(first) or "").strip() if first else "",
+                                    (r.get(last) or "").strip() if last else "") if p)
+        if not name and full:
+            name = (r.get(full) or "").strip()
+        email = (r.get(mail) or "").strip() if mail else ""
+        rows.append({"Include": True, "Extension": ext, "Name": name, "Email": email if EMAIL_RE.fullmatch(email) else ""})
+        if len(rows) >= MAX_EXTENSIONS:
+            break
+    if not rows:
+        return [], "No extension numbers were found in that file."
+    return rows, ""
+
+
+def fill_staff_template(body, name, ext, pw, address):
+    first = (name or "").split(" ")[0] or "there"
+    out = body
+    for k, v in (("{first_name}", first), ("{name}", name or ""), ("{extension}", ext),
+                 ("{password}", pw), ("{address}", address)):
+        out = out.replace(k, v)
+    return out
+
+
 def lines(text):
     return [l.strip() for l in (text or "").splitlines() if l.strip()]
 
@@ -512,11 +562,45 @@ with left:
     # ---- 03 Users --------------------------------------------------------
     with st.container(key="card-users"):
         section_header("03", "Staff extensions", "Used for the login list and the cut-out login cards")
-        ranges_text = st.text_input("Extension numbers or ranges", key="ranges",
-                                    placeholder="e.g. 1000-1012, 5000-5002")
-        named_text = st.text_area("Names (optional) - one per line, extension first", key="named", height=110,
-                                  placeholder="1000, Sarah Jones\n1001, Tom Blake")
-        ext_pairs, ext_warns = parse_extensions(ranges_text, named_text)
+        up = st.file_uploader("Upload the extensions export (CSV)", type=["csv"], key="ext_csv",
+                              help="The extensions CSV downloaded from the phone system. Only the extension number, "
+                                   "name and email address columns are read - passwords and everything else in the file are ignored.")
+        csv_rows, csv_error = ([], "")
+        if up is not None:
+            csv_rows, csv_error = parse_extension_csv(up.getvalue())
+            if csv_error:
+                st.error(csv_error)
+        picked = []
+        if csv_rows:
+            st.caption(f"{len(csv_rows)} extensions found in {up.name}. Untick any that shouldn't get a login "
+                       "(spare lines, meeting rooms) and correct names if needed.")
+            edited = st.data_editor(
+                csv_rows, key=f"ext_editor_{abs(hash(up.getvalue()))}", hide_index=True, num_rows="fixed",
+                height=min(38 + 35 * len(csv_rows), 420), **FULL_WIDTH,
+                column_config={
+                    "Include": st.column_config.CheckboxColumn("Include", width="small"),
+                    "Extension": st.column_config.TextColumn("Extension", disabled=True, width="small"),
+                    "Name": st.column_config.TextColumn("Name", width="medium"),
+                    "Email": st.column_config.TextColumn("Email (for individual sends)", width="large"),
+                })
+            picked = [(str(r["Extension"]), ((r.get("Name") or "").strip(), (r.get("Email") or "").strip()))
+                      for r in edited if r.get("Include")]
+        with st.expander("Or type extensions in by hand", expanded=False):
+            ranges_text = st.text_input("Extension numbers or ranges", key="ranges",
+                                        placeholder="e.g. 1000-1012, 5000-5002")
+            named_text = st.text_area("Names and emails (optional) - one per line, extension first", key="named", height=110,
+                                      placeholder="1000, Sarah Jones, sarah@example.co.uk\n1001, Tom Blake")
+        typed, ext_warns = parse_extensions(ranges_text, named_text)
+        merged = dict(picked)
+        for e, n in typed:
+            m = EMAIL_RE.search(n)
+            em = m.group(0) if m else ""
+            n = n.replace(em, "").strip(" ,;<>-") if em else n
+            if n or em or e not in merged:
+                merged[e] = (n or merged.get(e, ("", ""))[0], em or merged.get(e, ("", ""))[1])
+        ordered = sorted(merged.items(), key=lambda kv: (len(kv[0]), kv[0]))[:MAX_EXTENSIONS]
+        ext_pairs = [(e, v[0]) for e, v in ordered]
+        email_by_ext = {e: v[1] for e, v in ordered if EMAIL_RE.fullmatch(v[1] or "")}
         for w in ext_warns:
             st.warning(w)
         c1, c2 = st.columns(2)
@@ -587,6 +671,7 @@ with right:
             ("Main contact", contact_name or "-"),
             ("Logins included", "3 portals" if mgr_url else "2 portals"),
             ("Staff extensions", f"{len(ext_pairs):,}" if ext_pairs else "None listed"),
+            ("With an email address", f"{len(email_by_ext):,}" if ext_pairs else "-"),
             ("Zoho account", ss.zoho_account.get("Account_Name", "") if ss.zoho_account else "Not linked"),
         ]
         render_html("".join(f'<div class="pe-row"><span>{esc(a)}</span><b>{esc(b)}</b></div>' for a, b in rows))
@@ -642,7 +727,7 @@ with st.container(key="card-docs"):
 # ---- 05 Send & log ----------------------------------------------------------
 sent = ss.get("sent_for") == (company, contact_email)
 with st.container(key="card-send"):
-    section_header("05", "Send from Zoho", "Emails the pack and logs it on the customer's account")
+    section_header("05", "Send from Zoho", "Email the main contact, each member of staff, or both - all logged on the account")
     if not ZOHO_READY:
         render_html(f'<div class="pe-empty"><div class="ic">{ICON_PHONE}</div><div class="t">Zoho isn\'t connected yet</div>'
                     '<ol><li>Add ZOHO_CLIENT_ID and ZOHO_CLIENT_SECRET to Secrets</li>'
@@ -653,98 +738,191 @@ with st.container(key="card-send"):
     elif not ss.zoho_account:
         st.caption("Search for the customer in section 01 and press **Use this account** so the email can be logged against it.")
     else:
-        contact = next((c for c in ss.zoho_contacts if (c.get("Email") or "").lower() == contact_email.lower()), None)
-        froms = zoho_from_addresses(sec("ZOHO_REFRESH_TOKEN")[-6:])
-        c1, c2 = st.columns(2)
-        if froms:
-            idx = c1.selectbox("Send from", range(len(froms)),
-                               format_func=lambda i: f"{froms[i].get('email')} ({froms[i].get('user_name', '')})")
-            sender = froms[idx]
-        else:
-            manual = c1.text_input("Send from (must be an address set up in Zoho CRM)", key="from_manual")
-            sender = {"email": manual.strip(), "user_name": BRAND, "type": ""}
-        c2.text_input("Send to", value=f"{contact_name} <{contact_email}>" if contact_email else "", disabled=True)
-        if not contact:
-            st.warning("The main contact's email doesn't match a contact on this Zoho account. Pick a contact in "
-                       "section 01 - Zoho only sends to addresses held on a record.")
+        tab_main, tab_staff = st.tabs(["Main contact", "Individual staff"])
+        with tab_main:
+            contact = next((c for c in ss.zoho_contacts if (c.get("Email") or "").lower() == contact_email.lower()), None)
+            froms = zoho_from_addresses(sec("ZOHO_REFRESH_TOKEN")[-6:])
+            c1, c2 = st.columns(2)
+            if froms:
+                idx = c1.selectbox("Send from", range(len(froms)),
+                                   format_func=lambda i: f"{froms[i].get('email')} ({froms[i].get('user_name', '')})")
+                sender = froms[idx]
+            else:
+                manual = c1.text_input("Send from (must be an address set up in Zoho CRM)", key="from_manual")
+                sender = {"email": manual.strip(), "user_name": BRAND, "type": ""}
+            c2.text_input("Send to", value=f"{contact_name} <{contact_email}>" if contact_email else "", disabled=True)
+            if not contact:
+                st.warning("The main contact's email doesn't match a contact on this Zoho account. Pick a contact in "
+                           "section 01 - Zoho only sends to addresses held on a record.")
 
-        first = contact_name.split(" ")[0] if contact_name else "there"
-        attach_keys = st.multiselect("Attach", list(docs), default=[k for k in ("manager", "staff") if k in docs],
-                                     format_func=lambda k: FILES[k][1])
-        default_body = (
-            f"Hi {first},\n\n"
-            f"Great news - your {BRAND} service for {company} is now live.\n\n"
-            f"Attached is everything you need to get started:\n\n"
-            + ("- Access Pack - your own copy, with the administrator"
-               + (" and manager dashboard" if mgr_url else "") + " logins. Please keep this one to yourself.\n"
-               if "manager" in attach_keys else "")
-            + ("- Staff Guide - a one-page guide you can forward to your whole team. It only covers their own personal login.\n"
-               if "staff" in attach_keys else "")
-            + ("- Login Cards - a printable card for each member of staff.\n" if "cards" in attach_keys else "")
-            + f"\nIf you have any questions at all, just reply to this email.\n\nKind regards\n{EMAIL_SIGN_OFF}"
-        )
-        sig = str(abs(hash((company, first, tuple(attach_keys), bool(mgr_url)))))
-        subject = st.text_input("Subject", value=f"Welcome to {BRAND} - your login details for {company}", key=f"subj_{sig}")
-        body = st.text_area("Message", value=default_body, height=280, key=f"body_{sig}")
-        c1, c2 = st.columns(2)
-        add_note = c1.toggle("Add a note to the account", value=True, key="w_note")
-        file_docs = c2.toggle("Save the PDFs on the account", value=True, key="w_file",
-                              help="Stores the attached PDFs under Attachments on the Zoho account. "
-                                   "Turn off if you don't want passwords held in the CRM.")
+            first = contact_name.split(" ")[0] if contact_name else "there"
+            attach_keys = st.multiselect("Attach", list(docs), default=[k for k in ("manager", "staff") if k in docs],
+                                         format_func=lambda k: FILES[k][1])
+            default_body = (
+                f"Hi {first},\n\n"
+                f"Great news - your {BRAND} service for {company} is now live.\n\n"
+                f"Attached is everything you need to get started:\n\n"
+                + ("- Access Pack - your own copy, with the administrator"
+                   + (" and manager dashboard" if mgr_url else "") + " logins. Please keep this one to yourself.\n"
+                   if "manager" in attach_keys else "")
+                + ("- Staff Guide - a one-page guide you can forward to your whole team. It only covers their own personal login.\n"
+                   if "staff" in attach_keys else "")
+                + ("- Login Cards - a printable card for each member of staff.\n" if "cards" in attach_keys else "")
+                + f"\nIf you have any questions at all, just reply to this email.\n\nKind regards\n{EMAIL_SIGN_OFF}"
+            )
+            sig = str(abs(hash((company, first, tuple(attach_keys), bool(mgr_url)))))
+            subject = st.text_input("Subject", value=f"Welcome to {BRAND} - your login details for {company}", key=f"subj_{sig}")
+            body = st.text_area("Message", value=default_body, height=280, key=f"body_{sig}")
+            c1, c2 = st.columns(2)
+            add_note = c1.toggle("Add a note to the account", value=True, key="w_note")
+            file_docs = c2.toggle("Save the PDFs on the account", value=True, key="w_file",
+                                  help="Stores the attached PDFs under Attachments on the Zoho account. "
+                                       "Turn off if you don't want passwords held in the CRM.")
 
-        can_send = bool(contact and sender.get("email") and attach_keys and subject.strip())
-        if sent:
-            st.success(f"Sent to {contact_email} and logged on {ss.zoho_account.get('Account_Name', '')}.")
-            for line in ss.get("sent_log", []):
-                st.caption(line)
-        if st.button("Send again" if sent else "Send and log in Zoho", type="primary", disabled=not can_send):
-            log = []
-            try:
-                with st.status("Sending through Zoho...", expanded=True) as status:
-                    st.write("Uploading the PDFs")
-                    ids = [{"id": zoho_upload_file(FILES[k][0], docs[k])} for k in attach_keys]
-                    st.write("Sending the email")
-                    paras = "".join(
-                        f'<p style="margin:0 0 12px">{esc(p).replace(chr(10), "<br>")}</p>' for p in body.strip().split("\n\n"))
-                    payload = {
-                        "from": {"user_name": sender.get("user_name") or BRAND, "email": sender["email"]},
-                        "to": [{"user_name": contact_name or contact_email, "email": contact_email}],
-                        "subject": subject.strip(),
-                        "content": f'<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1B2333;line-height:1.5">{paras}</div>',
-                        "mail_format": "html",
-                        "attachments": ids,
-                    }
-                    if sender.get("type") == "org_email":
-                        payload["org_email"] = True
-                    zoho_send_mail("Contacts", contact["id"], payload)
-                    log.append(f"Email sent from {sender['email']} with {len(ids)} attachment(s).")
+            can_send = bool(contact and sender.get("email") and attach_keys and subject.strip())
+            if sent:
+                st.success(f"Sent to {contact_email} and logged on {ss.zoho_account.get('Account_Name', '')}.")
+                for line in ss.get("sent_log", []):
+                    st.caption(line)
+            if st.button("Send again" if sent else "Send and log in Zoho", type="primary", disabled=not can_send):
+                log = []
+                try:
+                    with st.status("Sending through Zoho...", expanded=True) as status:
+                        st.write("Uploading the PDFs")
+                        ids = [{"id": zoho_upload_file(FILES[k][0], docs[k])} for k in attach_keys]
+                        st.write("Sending the email")
+                        paras = "".join(
+                            f'<p style="margin:0 0 12px">{esc(p).replace(chr(10), "<br>")}</p>' for p in body.strip().split("\n\n"))
+                        payload = {
+                            "from": {"user_name": sender.get("user_name") or BRAND, "email": sender["email"]},
+                            "to": [{"user_name": contact_name or contact_email, "email": contact_email}],
+                            "subject": subject.strip(),
+                            "content": f'<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1B2333;line-height:1.5">{paras}</div>',
+                            "mail_format": "html",
+                            "attachments": ids,
+                        }
+                        if sender.get("type") == "org_email":
+                            payload["org_email"] = True
+                        zoho_send_mail("Contacts", contact["id"], payload)
+                        log.append(f"Email sent from {sender['email']} with {len(ids)} attachment(s).")
+                        acc_id = ss.zoho_account["id"]
+                        if add_note:
+                            st.write("Adding the note")
+                            zoho_add_note(acc_id, f"{BRAND} onboarding pack sent",
+                                          f"{BRAND} onboarding pack emailed to {contact_name} ({contact_email}) on "
+                                          f"{dt.datetime.now().strftime('%d/%m/%Y %H:%M')} from {sender['email']}.\n"
+                                          f"Site: https://{slug}.{DEFAULT_DOMAIN}/\n"
+                                          f"Documents: {', '.join(FILES[k][1] for k in attach_keys)}\n"
+                                          f"Staff extensions listed: {len(ext_pairs)}")
+                            log.append("Note added to the account.")
+                        if file_docs:
+                            st.write("Saving the PDFs on the account")
+                            for k in attach_keys:
+                                zoho_attach(acc_id, FILES[k][0], docs[k])
+                            log.append("PDFs saved under the account's attachments.")
+                        status.update(label="Sent and logged", state="complete", expanded=False)
+                    ss.sent_for = (company, contact_email)
+                    ss.sent_log = log
+                    st.rerun()
+                except Exception as e:
+                    for line in log:
+                        st.caption("Done: " + line)
+                    st.error(f"Zoho stopped at this step: {e}")
+
+        with tab_staff:
+            with_email = [(e, n, p) for e, n, p in exts if e in email_by_ext]
+            if not with_email:
+                st.caption("No staff email addresses yet. Upload the extensions CSV in section 03 (it includes each "
+                           "person's email) or add them in the table there.")
+            else:
+                st.caption(f"Sends each person their own login and a personal one-page guide. {len(with_email)} of "
+                           f"{len(exts)} extensions have an email address. Each email is logged on the "
+                           f"{ss.zoho_account.get('Account_Name', '')} account.")
+                sfroms = zoho_from_addresses(sec("ZOHO_REFRESH_TOKEN")[-6:])
+                if sfroms:
+                    sidx = st.selectbox("Send from", range(len(sfroms)), key="staff_from",
+                                        format_func=lambda i: f"{sfroms[i].get('email')} ({sfroms[i].get('user_name', '')})")
+                    ssender = sfroms[sidx]
+                else:
+                    smanual = st.text_input("Send from (must be an address set up in Zoho CRM)", key="staff_from_manual")
+                    ssender = {"email": smanual.strip(), "user_name": BRAND, "type": ""}
+                done = ss.setdefault("staff_sent", {})
+                label = {e: f"{e} - {n or 'No name'} - {email_by_ext[e]}" + ("  (sent)" if (slug, e) in done else "")
+                         for e, n, p in with_email}
+                chosen = st.multiselect("Send to", [e for e, _, _ in with_email],
+                                        default=[e for e, _, _ in with_email if (slug, e) not in done],
+                                        format_func=lambda e: label.get(e, e), key=f"staff_pick_{slug}_{len(with_email)}")
+                s_subject = st.text_input("Subject", value=f"Your {BRAND} login", key="staff_subject")
+                s_body = st.text_area(
+                    "Message - the words in {brackets} are filled in for each person", height=260, key="staff_body",
+                    value=("Hi {first_name},\n\n"
+                           f"{company} now uses {BRAND}, and your personal login is ready.\n\n"
+                           "Web address: {address}\nUsername: {extension}\nPassword: {password}\n\n"
+                           "Your one-page guide is attached. If you have any trouble logging in, speak to your manager first.\n\n"
+                           f"Kind regards\n{EMAIL_SIGN_OFF}"))
+                c1, c2 = st.columns(2)
+                s_attach = c1.toggle("Attach their personal guide (PDF)", value=True, key="w_staff_attach")
+                s_note = c2.toggle("Add a note to the account", value=True, key="w_staff_note")
+                if chosen:
+                    e0 = chosen[0]
+                    n0 = dict((e, n) for e, n, _ in exts).get(e0, "")
+                    with st.expander(f"Preview the email for {n0 or e0}"):
+                        st.text(fill_staff_template(s_body, n0, e0, PW_PATTERN.replace("{slug}", slug).replace("{ext}", e0), ai_url))
+                if st.button(f"Send {len(chosen)} individual email{'s' if len(chosen) != 1 else ''}", type="primary",
+                             disabled=not (chosen and ssender.get("email") and s_subject.strip()), key="staff_send"):
                     acc_id = ss.zoho_account["id"]
-                    if add_note:
-                        st.write("Adding the note")
-                        zoho_add_note(acc_id, f"{BRAND} onboarding pack sent",
-                                      f"{BRAND} onboarding pack emailed to {contact_name} ({contact_email}) on "
-                                      f"{dt.datetime.now().strftime('%d/%m/%Y %H:%M')} from {sender['email']}.\n"
-                                      f"Site: https://{slug}.{DEFAULT_DOMAIN}/\n"
-                                      f"Documents: {', '.join(FILES[k][1] for k in attach_keys)}\n"
-                                      f"Staff extensions listed: {len(ext_pairs)}")
-                        log.append("Note added to the account.")
-                    if file_docs:
-                        st.write("Saving the PDFs on the account")
-                        for k in attach_keys:
-                            zoho_attach(acc_id, FILES[k][0], docs[k])
-                        log.append("PDFs saved under the account's attachments.")
-                    status.update(label="Sent and logged", state="complete", expanded=False)
-                ss.sent_for = (company, contact_email)
-                ss.sent_log = log
-                st.rerun()
-            except Exception as e:
-                for line in log:
-                    st.caption("Done: " + line)
-                st.error(f"Zoho stopped at this step: {e}")
+                    ok, failed = [], []
+                    bar = st.progress(0.0, text="Sending...")
+                    lookup = {e: (n, p) for e, n, p in exts}
+                    for i, e in enumerate(chosen):
+                        n, p = lookup[e]
+                        to = email_by_ext[e]
+                        bar.progress(i / len(chosen), text=f"Sending to {n or e} ({i + 1} of {len(chosen)})")
+                        try:
+                            text = fill_staff_template(s_body, n, e, p, ai_url)
+                            paras = "".join(f'<p style="margin:0 0 12px">{esc(x).replace(chr(10), "<br>")}</p>'
+                                            for x in text.strip().split("\n\n"))
+                            payload = {
+                                "from": {"user_name": ssender.get("user_name") or BRAND, "email": ssender["email"]},
+                                "to": [{"user_name": n or to, "email": to}],
+                                "subject": s_subject.strip(),
+                                "content": f'<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1B2333;line-height:1.5">{paras}</div>',
+                                "mail_format": "html",
+                            }
+                            if s_attach:
+                                pdf = pdfs.build_staff_guide(data, person=(e, n, p))
+                                payload["attachments"] = [{"id": zoho_upload_file(f"{BRAND} login - {file_stub(n or e)}.pdf", pdf)}]
+                            if ssender.get("type") == "org_email":
+                                payload["org_email"] = True
+                            zoho_send_mail("Accounts", acc_id, payload)
+                            ok.append((e, n, to))
+                            done[(slug, e)] = True
+                        except Exception as err:
+                            failed.append((e, n, to, str(err)))
+                    bar.progress(1.0, text="Finished")
+                    if ok and s_note:
+                        try:
+                            zoho_add_note(acc_id, f"{BRAND} staff logins sent",
+                                          f"Individual {BRAND} login emails sent on {dt.datetime.now().strftime('%d/%m/%Y %H:%M')} "
+                                          f"from {ssender['email']} to {len(ok)} staff:\n"
+                                          + "\n".join(f"{e} - {n or 'No name'} - {to}" for e, n, to in ok))
+                        except Exception as err:
+                            st.warning(f"Emails went, but the note could not be added: {err}")
+                    ss.staff_result = (ok, failed)
+                res = ss.get("staff_result")
+                if res:
+                    ok, failed = res
+                    if ok:
+                        st.success(f"{len(ok)} individual email{'s' if len(ok) != 1 else ''} sent and logged.")
+                    for e, n, to, err in failed:
+                        st.error(f"{e} {n} ({to}) was not sent - Zoho said: {err}")
+                    if failed:
+                        st.caption("If Zoho refuses an address, add that person as a contact on the account in Zoho and send again.")
+
 
 # ---- hero (filled last so the stepper reflects this run) ---------------------
 steps = [("Customer", bool(company and slug)), ("Logins", bool(rec_pass and (not mgr_url or mgr_pass))),
-         ("Documents", ready), ("Sent", sent and ready)]
+         ("Documents", ready), ("Sent", (sent or bool(ss.get("staff_result") and ss.staff_result[0])) and ready)]
 active = next((i for i, (_, done) in enumerate(steps) if not done), len(steps))
 parts = []
 for i, (label, done) in enumerate(steps):
