@@ -56,7 +56,21 @@ DEFAULT_WORDING = {
 
 ZOHO_SCOPE = "ZohoCRM.modules.ALL,ZohoCRM.send_mail.all.CREATE,ZohoCRM.Files.CREATE,ZohoCRM.settings.emails.READ"
 
-st.set_page_config(page_title=f"{BRAND} Onboarding", page_icon="📞", layout="wide")
+HERE = os.path.dirname(os.path.abspath(__file__))
+LOGO_DARK = os.path.join(HERE, "callscope_logo_dark.png")   # white wording, for dark backgrounds (PDF headers)
+LOGO_ICON = os.path.join(HERE, "callscope_icon.png")
+
+st.set_page_config(page_title=f"{BRAND} Onboarding", page_icon=LOGO_ICON if os.path.exists(LOGO_ICON) else "📞",
+                   layout="wide")
+
+
+def _img_tag(path, height):
+    try:
+        import base64
+        with open(path, "rb") as f:
+            return f'<img src="data:image/png;base64,{base64.b64encode(f.read()).decode()}" style="height:{height}px" alt="Call Scope">'
+    except Exception:
+        return ""
 
 
 # ----------------------------------------------------------------------------
@@ -104,9 +118,9 @@ ICON_PHONE = ('<svg width="22" height="22" viewBox="0 0 24 24" fill="none" strok
 
 CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-:root{--bg:#0A0E1A;--surface:#111827;--surface-2:#161F33;--surface-3:#1C2740;--border:rgba(148,163,184,.14);--border-strong:rgba(148,163,184,.26);--text:#E7EAF3;--muted:#8C98B0;--faint:#5E6A82;--accent:#7C83FF;--accent-2:#38D6F5;--accent-soft:rgba(124,131,255,.14);--good:#34D399;--warn:#FBBF24;--risk:#FB923C;--bad:#F87171;--radius:14px;--grad:linear-gradient(135deg,#7C83FF 0%,#38D6F5 100%);}
+:root{--bg:#0A0E1A;--surface:#111827;--surface-2:#161F33;--surface-3:#1C2740;--border:rgba(148,163,184,.14);--border-strong:rgba(148,163,184,.26);--text:#E7EAF3;--muted:#8C98B0;--faint:#5E6A82;--accent:#8B84F2;--accent-2:#B3ADF7;--accent-soft:rgba(121,113,234,.16);--good:#34D399;--warn:#FBBF24;--risk:#FB923C;--bad:#F87171;--radius:14px;--grad:linear-gradient(135deg,#7971EA 0%,#B3ADF7 100%);}
 html,body,[class*="css"],.stApp,button,input,textarea,select{font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif!important}
-.stApp{background:radial-gradient(1200px 500px at 85% -10%,rgba(56,214,245,.07),transparent 60%),radial-gradient(900px 500px at 10% -20%,rgba(124,131,255,.10),transparent 60%),var(--bg)}
+.stApp{background:radial-gradient(1200px 500px at 85% -10%,rgba(179,173,247,.06),transparent 60%),radial-gradient(900px 500px at 10% -20%,rgba(121,113,234,.10),transparent 60%),var(--bg)}
 [data-testid="stHeader"]{background:transparent}[data-testid="stDecoration"]{display:none}footer{visibility:hidden}
 .block-container{padding-top:1.6rem!important;padding-bottom:3rem!important;max-width:1500px}
 [data-testid="stSidebar"]{background:linear-gradient(180deg,#0D1322 0%,#0A0E1A 100%);border-right:1px solid var(--border)}
@@ -119,7 +133,7 @@ html,body,[class*="css"],.stApp,button,input,textarea,select{font-family:'Inter'
 [data-baseweb="input"]>div,[data-baseweb="base-input"]{background:transparent!important}
 .stButton button,.stDownloadButton button,.stFormSubmitButton button{border-radius:10px!important;font-weight:600!important;border:1px solid var(--border-strong)!important;background:var(--surface-2)!important;color:var(--text)!important;transition:all .15s ease}
 .stButton button:hover,.stDownloadButton button:hover{border-color:var(--accent)!important;transform:translateY(-1px)}
-.stButton button[kind="primary"],.stDownloadButton button[kind="primary"],.stFormSubmitButton button,[data-testid="stBaseButton-primary"],[data-testid="stBaseLinkButton-primary"]{background:var(--grad)!important;border:none!important;color:#0A0E1A!important;box-shadow:0 8px 24px -10px rgba(124,131,255,.8)}
+.stButton button[kind="primary"],.stDownloadButton button[kind="primary"],.stFormSubmitButton button,[data-testid="stBaseButton-primary"],[data-testid="stBaseLinkButton-primary"]{background:var(--grad)!important;border:none!important;color:#0A0E1A!important;box-shadow:0 8px 24px -10px rgba(121,113,234,.8)}
 .stButton button[kind="primary"] p,.stDownloadButton button[kind="primary"] p,[data-testid="stBaseButton-primary"] p,.stFormSubmitButton button p,[data-testid="stBaseLinkButton-primary"] p{color:#0A0E1A!important;font-weight:700!important}
 [data-testid="stTabs"] [role="tablist"],[data-baseweb="tab-list"]{gap:4px;background:var(--surface);padding:4px;border-radius:12px;border:1px solid var(--border);width:fit-content}
 [data-testid="stTabs"] [role="tab"],[data-baseweb="tab"]{border-radius:9px!important;padding:8px 16px!important;color:var(--muted)!important;background:transparent!important}
@@ -140,14 +154,14 @@ html,body,[class*="css"],.stApp,button,input,textarea,select{font-family:'Inter'
 .pe-step.active{background:var(--surface-3);color:var(--text)}.pe-step.active .num{background:var(--grad);border:none;color:#0A0E1A}
 .pe-step-sep{width:14px;height:1px;background:var(--border-strong)}
 .pe-section{display:flex;align-items:center;gap:12px;margin-bottom:16px}
-.pe-section .badge{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent);font-weight:800;font-size:.85rem;border:1px solid rgba(124,131,255,.3)}
+.pe-section .badge{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent);font-weight:800;font-size:.85rem;border:1px solid rgba(121,113,234,.3)}
 .pe-section .t{font-size:1.08rem;font-weight:700;color:var(--text)}.pe-section .s{font-size:.82rem;color:var(--muted);margin-top:2px}
 .pe-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:.76rem;font-weight:600;background:var(--surface-3);color:var(--text);border:1px solid var(--border);white-space:nowrap}
-.pe-chip.accent{background:var(--accent-soft);color:#B9BDFF;border-color:rgba(124,131,255,.3)}
+.pe-chip.accent{background:var(--accent-soft);color:#B9BDFF;border-color:rgba(121,113,234,.3)}
 .pe-chip.good{background:rgba(52,211,153,.12);color:var(--good);border-color:rgba(52,211,153,.3)}
 .pe-chip.warn{background:rgba(251,191,36,.12);color:var(--warn);border-color:rgba(251,191,36,.3)}
 .pe-chip.bad{background:rgba(248,113,113,.12);color:var(--bad);border-color:rgba(248,113,113,.3)}
-.pe-logo{width:40px;height:40px;border-radius:12px;background:var(--grad);display:grid;place-items:center;color:#0A0E1A;box-shadow:0 10px 24px -10px rgba(124,131,255,.9)}
+.pe-logo{width:40px;height:40px;border-radius:12px;background:var(--grad);display:grid;place-items:center;color:#0A0E1A;box-shadow:0 10px 24px -10px rgba(121,113,234,.9)}
 .pe-login-head{text-align:center;margin:8vh 0 22px}.pe-login-head .pe-logo{width:54px;height:54px;margin:0 auto 16px;border-radius:16px}
 .pe-login-head .t{font-size:1.6rem;font-weight:800;letter-spacing:-.03em;color:var(--text)}.pe-login-head .s{color:var(--muted);font-size:.92rem;margin-top:6px}
 .pe-brand{display:flex;align-items:center;gap:12px;margin-bottom:18px}.pe-brand .n{font-weight:800;color:var(--text)}.pe-brand .g{font-size:.78rem;color:var(--muted)}
@@ -168,8 +182,10 @@ render_html(f"<style>{CSS}</style>")
 def gate():
     if st.session_state.get("authed"):
         return
-    render_html(f'<div class="pe-login-head"><div class="pe-logo">{ICON_PHONE}</div>'
-                f'<div class="t">{esc(BRAND)} Onboarding</div>'
+    logo_html = _img_tag(LOGO_DARK, 58)
+    render_html('<div class="pe-login-head">'
+                + (f'<div style="margin-bottom:18px">{logo_html}</div>' if logo_html else f'<div class="pe-logo">{ICON_PHONE}</div>')
+                + f'<div class="t">{"Onboarding Manager" if logo_html else esc(BRAND) + " Onboarding"}</div>'
                 '<div class="s">Create and send customer welcome packs</div></div>')
     _, mid, _ = st.columns([1, 1.1, 1])
     with mid, st.container(key="card-login"):
@@ -298,8 +314,12 @@ def zoho_attach(account_id, name, data):
 # Sidebar
 # ----------------------------------------------------------------------------
 with st.sidebar:
-    render_html(f'<div class="pe-brand"><div class="pe-logo">{ICON_PHONE}</div><div><div class="n">{esc(BRAND)}</div>'
-                '<div class="g">Onboarding Manager</div></div></div>')
+    _side_logo = _img_tag(LOGO_DARK, 38)
+    if _side_logo:
+        render_html(f'<div style="margin-bottom:6px">{_side_logo}</div><div class="pe-brand"><div class="g">Onboarding Manager</div></div>')
+    else:
+        render_html(f'<div class="pe-brand"><div class="pe-logo">{ICON_PHONE}</div><div><div class="n">{esc(BRAND)}</div>'
+                    '<div class="g">Onboarding Manager</div></div></div>')
     render_html('<div class="pe-row"><span><span class="pe-dot" style="background:var(--%s)"></span>Zoho CRM</span><b>%s</b></div>'
                 % (("good", "Connected") if ZOHO_READY else ("warn", "Not set up")))
     st.write("")
@@ -698,7 +718,7 @@ ready = not missing
 docs = {}
 if ready:
     exts = [(e, n, PW_PATTERN.replace("{slug}", slug).replace("{ext}", e)) for e, n in ext_pairs]
-    logo = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+    logo = LOGO_DARK
     data = dict(
         brand=BRAND, company=company, slug=slug, contact_name=contact_name,
         date_str=dt.date.today().strftime("%-d %B %Y"),
