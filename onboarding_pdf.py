@@ -8,7 +8,9 @@ Three documents are built from one dictionary of customer details:
 
 Colours and wording live at the top so they are easy to change.
 """
+import functools
 import io
+import threading
 from xml.sax.saxutils import escape  # noqa: F401  (kept for callers)
 
 from reportlab.lib.colors import HexColor, Color, white
@@ -37,6 +39,28 @@ AMBER_SOFT = HexColor("#FDF1DC")
 
 REG, BOLD, MONO = "Helvetica", "Helvetica-Bold", "Courier-Bold"
 
+# Colour themes. "callscope" = Call Scope purple; "sycomms" = SY Communications deep purple + teal.
+THEMES = {
+    "callscope": dict(NAVY="#0A0E1A", NAVY_2="#161F33", INDIGO="#7971EA", INDIGO_SOFT="#EEEDFD", CYAN="#B3ADF7"),
+    "sycomms": dict(NAVY="#1F1450", NAVY_2="#2D1F6E", INDIGO="#009C8D", INDIGO_SOFT="#DFF6F3", CYAN="#4FE0D0"),
+}
+_LOCK = threading.RLock()
+
+
+def themed(fn):
+    """Builds the document in the colour theme named in d['theme']."""
+    @functools.wraps(fn)
+    def wrapper(d, *a, **k):
+        with _LOCK:
+            for name, value in THEMES.get(d.get("theme") or "callscope", THEMES["callscope"]).items():
+                globals()[name] = HexColor(value)
+            try:
+                return fn(d, *a, **k)
+            finally:
+                for name, value in THEMES["callscope"].items():
+                    globals()[name] = HexColor(value)
+    return wrapper
+
 
 def _lerp(c1, c2, t):
     return Color(c1.red + (c2.red - c1.red) * t,
@@ -44,7 +68,9 @@ def _lerp(c1, c2, t):
                  c1.blue + (c2.blue - c1.blue) * t)
 
 
-def _gradient(c, x, y, w, h, c1=INDIGO, c2=CYAN, steps=80):
+def _gradient(c, x, y, w, h, c1=None, c2=None, steps=80):
+    c1 = c1 or INDIGO
+    c2 = c2 or CYAN
     sw = w / steps
     for i in range(steps):
         c.setFillColor(_lerp(c1, c2, i / (steps - 1)))
@@ -121,7 +147,7 @@ class Doc:
             c.drawString(M + 31, top + 1, d["brand"])
         c.setFillColor(CYAN)
         c.setFont(BOLD, 7.5)
-        c.drawRightString(W - M, top + 2, "CUSTOMER ONBOARDING", charSpace=1.6)
+        c.drawRightString(W - M, top + 2, (d.get("eyebrow") or "CUSTOMER ONBOARDING").upper(), charSpace=1.6)
 
         c.setFillColor(white)
         size = _fit(c, self.title, BOLD, 29, CW)
@@ -374,6 +400,59 @@ class Doc:
                 c.linkURL(link, (x, by, x + w, by + 24), relative=0)
         self.y = top - h - 9
 
+    def qr(self, x, y, size, url):
+        """Draws a QR code with its bottom-left corner at (x, y)."""
+        from reportlab.graphics import renderPDF
+        from reportlab.graphics.barcode.qr import QrCodeWidget
+        from reportlab.graphics.shapes import Drawing
+        w = QrCodeWidget(url, barLevel="M")
+        b = w.getBounds()
+        bw, bh = b[2] - b[0], b[3] - b[1]
+        dr = Drawing(size, size, transform=[size / bw, 0, 0, size / bh, 0, 0])
+        dr.add(w)
+        self.c.setFillColor(white); self.c.setStrokeColor(BORDER)
+        self.c.roundRect(x - 5, y - 5, size + 10, size + 10, 6, stroke=1, fill=1)
+        renderPDF.draw(dr, self.c, x, y)
+
+    def step_fields(self, n, title, lines, fields=(), qr_url=None):
+        """Numbered step card with one or more labelled value boxes and an optional QR code on the right.
+        fields: list of (label, value, link_or_None)."""
+        c = self.c
+        qr_size = 74 if qr_url else 0
+        tw = CW - 78 - (qr_size + 22 if qr_url else 0)
+        body = []
+        for ln in lines:
+            body += simpleSplit(ln, REG, 9.6, tw)
+        h = 18 + 16 + len(body) * 13.5 + len(fields) * 35 + 6
+        if qr_url:
+            h = max(h, qr_size + 46)
+        self.need(h + 9)
+        top = self.y
+        c.setFillColor(CARD); c.setStrokeColor(BORDER); c.setLineWidth(0.8)
+        c.roundRect(M, top - h, CW, h, 10, stroke=1, fill=1)
+        _gradient(c, M + 18, top - 46, 28, 28, steps=24)
+        c.setFillColor(NAVY); c.setFont(BOLD, 14)
+        c.drawCentredString(M + 32, top - 37, str(n))
+        x = M + 60
+        c.setFillColor(TEXT); c.setFont(BOLD, 12.5)
+        c.drawString(x, top - 30, title)
+        y = top - 48
+        c.setFont(REG, 9.6); c.setFillColor(MUTED)
+        for ln in body:
+            c.drawString(x, y, ln)
+            y -= 13.5
+        y += 4
+        for label, value, link in fields:
+            self.field(x, y, tw, label, value, link=link)
+            y -= 35
+        if qr_url:
+            qx = M + CW - 18 - qr_size - 5
+            qy = top - 20 - qr_size
+            self.qr(qx, qy, qr_size, qr_url)
+            c.setFont(BOLD, 6.2); c.setFillColor(FAINT)
+            c.drawCentredString(qx + qr_size / 2, qy - 15, "SCAN WITH YOUR PHONE", charSpace=0.7)
+        self.y = top - h - 7
+
     def bullets(self, items, size=9.4):
         c = self.c
         for it in items:
@@ -467,6 +546,7 @@ def _example(d):
     return ext, d["pw_pattern"].replace("{slug}", d["slug"]).replace("{ext}", ext)
 
 
+@themed
 def build_manager_pack(d):
     show = d.get("show_passwords", True)
     hidden = "Sent separately"
@@ -518,6 +598,7 @@ def build_manager_pack(d):
     return doc.finish()
 
 
+@themed
 def build_staff_guide(d, person=None):
     """person=(extension, name, password) makes a personal copy with that login filled in."""
     if person:
@@ -554,6 +635,7 @@ def build_staff_guide(d, person=None):
     return doc.finish()
 
 
+@themed
 def build_login_cards(d):
     """Cut-out cards, 8 per A4 page."""
     buf = io.BytesIO()
@@ -605,3 +687,74 @@ def build_login_cards(d):
         c.drawString(x + 16, top - ch + 12, f"{d['company']}  |  Personal login - please don't share")
     c.save()
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Wave softphone
+# ---------------------------------------------------------------------------
+def _wave_steps(doc, d, ext_value, pw_value, personal):
+    doc.step_fields(1, "Download Wave",
+                    ["Scan the code with your phone camera, or open the link below. The page has the app for "
+                     "iPhone, Android, Windows and Mac."],
+                    [("Download link", d["download_url"], d["download_url"])], qr_url=d["download_url"])
+    doc.step_fields(2, "Enter the server address",
+                    ["Open Wave and type the server address. It is slightly different on a phone and on a computer."],
+                    [("On your mobile", d["server_mobile"], None), ("On your PC or Mac", d["server_pc"], None)])
+    doc.step_fields(3, "Sign in",
+                    ["Use your extension number and password." if personal else
+                     "Use your own extension number and the password your manager gives you."],
+                    [("User / extension", ext_value, None), ("Password", pw_value, None)])
+
+
+@themed
+def build_wave_user_guide(d, person=None):
+    """Generic guide (no password) or, with person=(extension, name, password), a personal copy."""
+    if person:
+        ext, name, pw = person
+        doc = Doc(d, "Get started with Wave", f"Personal setup guide for {name}" if name else f"Setup guide for extension {ext}", False)
+        first = (name or "").split(" ")[0]
+        doc.para(f"Hi {first}," if first else "Hello,", size=11.5, font=BOLD, gap=4)
+        doc.para(f"Wave turns your mobile or computer into your {d['company']} phone - make and take work calls "
+                 f"on your office extension wherever you are. Setting it up takes three steps.", size=10.2, color=MUTED, gap=6)
+        _wave_steps(doc, d, ext, pw, True)
+    else:
+        doc = Doc(d, "Get started with Wave", f"Setup guide for {d['company']}", False)
+        doc.para(f"Wave turns your mobile or computer into your {d['company']} phone - make and take work calls "
+                 f"on your office extension wherever you are. Setting it up takes three steps.", size=10.2, color=MUTED, gap=10)
+        _wave_steps(doc, d, "Your extension number", "Provided by your manager", False)
+    doc.callout("Two quick tips", "When Wave asks, allow notifications and the microphone - otherwise calls can't ring "
+                "or be heard. Your login is personal, so please don't share it with colleagues.", "indigo")
+    doc.help_box("Any trouble signing in? Speak to your manager, or contact us.")
+    return doc.finish()
+
+
+@themed
+def build_wave_admin_pack(d):
+    show = d.get("show_passwords", True)
+    doc = Doc(d, "Your Wave rollout pack", "Everything you need to get your team onto Wave", True)
+    first = (d.get("contact_name") or "").split(" ")[0]
+    doc.para(f"Hi {first}," if first else "Hello,", size=11.5, font=BOLD, gap=4)
+    doc.para(f"Wave is the softphone app for your {d['company']} phone system. It puts each person's office extension "
+             f"on their mobile or computer. This pack is for you as the main contact - it lists every user's sign-in "
+             f"details, so please keep it to yourself. A separate Setup Guide is included that is safe to share.",
+             size=10, color=MUTED, gap=14)
+    doc.heading("How everyone gets set up")
+    exts = d.get("exts") or []
+    ex = exts[0] if exts else ("1000", "", "")
+    doc.step_fields(1, "Download Wave",
+                    ["One page has the app for iPhone, Android, Windows and Mac."],
+                    [("Download link", d["download_url"], d["download_url"])], qr_url=d["download_url"])
+    doc.step_fields(2, "Enter the server address",
+                    ["The same for everyone at your company."],
+                    [("On a mobile", d["server_mobile"], None), ("On a PC or Mac", d["server_pc"], None)])
+    doc.step_fields(3, "Sign in", ["Each person uses their own extension number and password, listed below."], [])
+    if exts:
+        doc.y -= 8
+        doc.need(60 + 15 * min(-(-len(exts) // 2), 12))
+        doc.heading(f"Your {len(exts)} Wave user{'s' if len(exts) != 1 else ''}")
+        doc.ext_table(exts, show)
+    doc.callout("Sharing with your team",
+                "Send the Setup Guide to your team and give each person their extension number and password - or ask us "
+                "to email everyone their own personal guide. Please keep this pack private.", "amber")
+    doc.help_box("We're here to help you get the most from your phone system.")
+    return doc.finish()
