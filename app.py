@@ -54,11 +54,23 @@ DEFAULT_WORDING = {
     "ai_bullets": "Your own calls, with AI summaries and insights\nA private view - you only see your own activity",
 }
 
+# ---- Wave softphone (sent under the SY Communications name) ------------------
+WAVE_BRAND = "SY Communications"
+WAVE_SUPPORT_EMAIL = "hello@sycomms.co.uk"
+WAVE_SUPPORT_PHONE = "01743 667419"
+WAVE_WEBSITE = "sycomms.co.uk"
+WAVE_SIGN_OFF = "Sy Communications"
+WAVE_DOWNLOAD_URL = "https://fw.gdms.cloud/wave/download/"
+WAVE_DEFAULT_SERVER = ""                # e.g. "185.195.118.51" to pre-fill the server address
+WAVE_PC_PORT = "8090"
+WAVE_PASSWORD_ENDING = "123!"           # default password = company name + this
+
 ZOHO_SCOPE = "ZohoCRM.modules.ALL,ZohoCRM.send_mail.all.CREATE,ZohoCRM.Files.CREATE,ZohoCRM.settings.emails.READ"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOGO_DARK = os.path.join(HERE, "callscope_logo_dark.png")   # white wording, for dark backgrounds (PDF headers)
 LOGO_ICON = os.path.join(HERE, "callscope_icon.png")
+WAVE_LOGO_DARK = os.path.join(HERE, "sycomms_logo_dark.png")  # optional: SY Comms logo with white wording
 
 st.set_page_config(page_title=f"{BRAND} Onboarding", page_icon=LOGO_ICON if os.path.exists(LOGO_ICON) else "📞",
                    layout="wide")
@@ -484,13 +496,27 @@ def parse_extension_csv(raw):
     return rows, ""
 
 
-def fill_staff_template(body, name, ext, pw, address):
+def fill_staff_template(body, name, ext, pw, address, extra=None):
     first = (name or "").split(" ")[0] or "there"
     out = body
-    for k, v in (("{first_name}", first), ("{name}", name or ""), ("{extension}", ext),
-                 ("{password}", pw), ("{address}", address)):
+    pairs = [("{first_name}", first), ("{name}", name or ""), ("{extension}", ext),
+             ("{password}", pw), ("{address}", address)]
+    pairs += [("{" + k + "}", v) for k, v in (extra or {}).items()]
+    for k, v in pairs:
         out = out.replace(k, v)
     return out
+
+
+def preferred_from(froms, is_wave):
+    """Wave goes out from an SY Comms address by default, Call Scope from a Call Scope one."""
+    hint = "sycomms" if is_wave else "callscope"
+    return next((i for i, f in enumerate(froms) if hint in (f.get("email") or "").lower()), 0)
+
+
+def clean_host(text):
+    """'https://185.195.118.51:8090/' -> '185.195.118.51'"""
+    h = re.sub(r"^[a-z]+://", "", (text or "").strip(), flags=re.I).split("/")[0]
+    return re.sub(r":\d+$", "", h).strip()
 
 
 def lines(text):
@@ -503,6 +529,11 @@ def build_documents(d, want_cards):
     if want_cards:
         out["cards"] = pdfs.build_login_cards(d)
     return out
+
+
+@st.cache_data(show_spinner=False, max_entries=20)
+def build_wave_documents(d):
+    return {"manager": pdfs.build_wave_admin_pack(d), "staff": pdfs.build_wave_user_guide(d)}
 
 
 @st.cache_data(show_spinner=False, max_entries=20)
@@ -553,6 +584,19 @@ def use_contact():
         ss.contact_email = c.get("Email") or ""
 
 
+try:
+    product = st.segmented_control("Product", ["Call Scope", "Wave"], default="Call Scope", key="product",
+                                   label_visibility="collapsed") or "Call Scope"
+except Exception:
+    product = st.radio("Product", ["Call Scope", "Wave"], horizontal=True, key="product", label_visibility="collapsed")
+IS_WAVE = product == "Wave"
+if IS_WAVE:
+    P = dict(key="wave", brand=WAVE_BRAND, product="Wave", support_email=WAVE_SUPPORT_EMAIL, support_phone=WAVE_SUPPORT_PHONE,
+             website=WAVE_WEBSITE, sign_off=WAVE_SIGN_OFF, logo=WAVE_LOGO_DARK, theme="sycomms")
+else:
+    P = dict(key="callscope", brand=BRAND, product=BRAND, support_email=SUPPORT_EMAIL, support_phone=SUPPORT_PHONE,
+             website=WEBSITE, sign_off=EMAIL_SIGN_OFF, logo=LOGO_DARK, theme="callscope")
+
 left, right = st.columns([1.75, 1], gap="large")
 
 with left:
@@ -590,44 +634,75 @@ with left:
                                "Zoho will only email addresses it holds on a record.")
         c1, c2 = st.columns(2)
         company = c1.text_input("Company name", key="company", placeholder="e.g. Currans").strip()
-        slug = clean_slug(c2.text_input("Site name (web address prefix)", key="slug", placeholder="e.g. currans",
-                                        help="The first part of their Call Scope address. It is also the start of every staff password."))
+        slug = "" if IS_WAVE else clean_slug(c2.text_input(
+            "Site name (web address prefix)", key="slug", placeholder="e.g. currans",
+            help="The first part of their Call Scope address. It is also the start of every staff password."))
         c1, c2 = st.columns(2)
         contact_name = c1.text_input("Main contact name", key="contact_name").strip()
         contact_email = c2.text_input("Main contact email", key="contact_email").strip()
 
     # ---- 02 Portals ------------------------------------------------------
     with st.container(key="card-portals"):
-        section_header("02", "Logins", "The addresses and passwords for this customer's site")
-        domain = DEFAULT_DOMAIN
-        show_slug = slug or "sitename"
-        rec_url = join_url(show_slug, domain, RECORDINGS_PATH)
-        ai_url = join_url(show_slug, domain, STAFF_PATH)
-
-        st.markdown("**Call recordings** - admin only")
-        render_html(f'<div class="pe-url">{esc(rec_url)}</div>')
-        c1, c2 = st.columns(2)
-        rec_user = c1.text_input("Admin username", value="Admin", key="rec_user").strip()
-        rec_pass = c2.text_input("Admin password", key="rec_pass").strip()
-
-        st.markdown("**Manager dashboard**")
-        include_mgr = st.toggle("Include the manager dashboard in the pack", value=True, key="w_mgr")
-        mgr_url = join_url(show_slug, domain, MANAGER_PATH) if include_mgr else ""
-        mgr_user = mgr_pass = ""
-        if include_mgr:
-            render_html(f'<div class="pe-url">{esc(mgr_url)}</div>')
+        if IS_WAVE:
+            section_header("02", "Wave sign-in details", "The server address and password for this customer's phone system")
+            c1, c2 = st.columns([3, 1])
+            wave_host = clean_host(c1.text_input("Server address", value=WAVE_DEFAULT_SERVER, key="wave_host",
+                                                 placeholder="e.g. 185.195.118.51",
+                                                 help="The phone system's address - just the IP or name, without https:// or a port."))
+            wave_port = re.sub(r"\D", "", c2.text_input("PC app port", value=WAVE_PC_PORT, key="wave_port")) or WAVE_PC_PORT
+            show_host = wave_host or "server-address"
+            server_mobile = show_host
+            server_pc = f"https://{show_host}:{wave_port}"
             c1, c2 = st.columns(2)
-            mgr_user = c1.text_input("Username (if any)", key="mgr_user").strip()
-            mgr_pass = c2.text_input("Dashboard password", key="mgr_pass").strip()
+            with c1:
+                st.caption("On a mobile")
+                render_html(f'<div class="pe-url">{esc(server_mobile)}</div>')
+            with c2:
+                st.caption("On a PC or Mac")
+                render_html(f'<div class="pe-url">{esc(server_pc)}</div>')
+            suggested_pw = (re.sub(r"[^A-Za-z0-9]", "", company) + WAVE_PASSWORD_ENDING) if company else ""
+            wave_pw = st.text_input("Password for every user", key="wave_pw",
+                                    placeholder=suggested_pw or "Company name followed by " + WAVE_PASSWORD_ENDING,
+                                    help="Leave blank to use the company name followed by " + WAVE_PASSWORD_ENDING
+                                         + ". Individual passwords can be changed in the table in section 03.").strip() or suggested_pw
+            if wave_pw:
+                st.caption(f"Every user's password will show as **{wave_pw}**. It must match the user password set on the "
+                           "phone system - this app does not change anything on the phone system.")
+            st.caption("Download page for all the apps")
+            render_html(f'<div class="pe-url">{esc(WAVE_DOWNLOAD_URL)}</div>')
+            mgr_url = ""
+        else:
+            section_header("02", "Logins", "The addresses and passwords for this customer's site")
+            domain = DEFAULT_DOMAIN
+            show_slug = slug or "sitename"
+            rec_url = join_url(show_slug, domain, RECORDINGS_PATH)
+            ai_url = join_url(show_slug, domain, STAFF_PATH)
 
-        st.markdown("**Staff AI portal** - everyone")
-        render_html(f'<div class="pe-url">{esc(ai_url)}</div>')
-        st.caption(f"Each person logs in with their extension number. Their password is the site name followed by "
-                   f"the extension - for example **{show_slug}1000**.")
+            st.markdown("**Call recordings** - admin only")
+            render_html(f'<div class="pe-url">{esc(rec_url)}</div>')
+            c1, c2 = st.columns(2)
+            rec_user = c1.text_input("Admin username", value="Admin", key="rec_user").strip()
+            rec_pass = c2.text_input("Admin password", key="rec_pass").strip()
+
+            st.markdown("**Manager dashboard**")
+            include_mgr = st.toggle("Include the manager dashboard in the pack", value=True, key="w_mgr")
+            mgr_url = join_url(show_slug, domain, MANAGER_PATH) if include_mgr else ""
+            mgr_user = mgr_pass = ""
+            if include_mgr:
+                render_html(f'<div class="pe-url">{esc(mgr_url)}</div>')
+                c1, c2 = st.columns(2)
+                mgr_user = c1.text_input("Username (if any)", key="mgr_user").strip()
+                mgr_pass = c2.text_input("Dashboard password", key="mgr_pass").strip()
+
+            st.markdown("**Staff AI portal** - everyone")
+            render_html(f'<div class="pe-url">{esc(ai_url)}</div>')
+            st.caption(f"Each person logs in with their extension number. Their password is the site name followed by "
+                       f"the extension - for example **{show_slug}1000**.")
 
     # ---- 03 Users --------------------------------------------------------
     with st.container(key="card-users"):
-        section_header("03", "Staff extensions", "Used for the login list and the cut-out login cards")
+        section_header("03", "Wave users" if IS_WAVE else "Staff extensions",
+                       "Who is getting Wave" if IS_WAVE else "Used for the login list and the cut-out login cards")
         up = st.file_uploader("Upload the extensions export (CSV)", type=["csv"], key="ext_csv",
                               help="The extensions CSV downloaded from the phone system. Only the extension number, "
                                    "name and email address columns are read - passwords and everything else in the file are ignored.")
@@ -637,6 +712,7 @@ with left:
             if csv_error:
                 st.error(csv_error)
         picked = []
+        pw_by_ext = {}
         if csv_rows:
             total_in_file = len(csv_rows)
             keep_text = st.text_input(
@@ -657,15 +733,23 @@ with left:
             st.caption(f"Using {len(csv_rows)} of {total_in_file} extensions from {up.name}."
                        + (f" Email domains: {', '.join(domains[:8])}{' and more' if len(domains) > 8 else ''}." if domains else "")
                        + " Untick any that shouldn't get a login (spare lines, meeting rooms) and correct names if needed.")
+            col_cfg_extra = {}
+            if IS_WAVE:
+                csv_rows = [{**r, "Password": wave_pw} for r in csv_rows]
+                col_cfg_extra = {"Password": st.column_config.TextColumn("Wave password", width="medium")}
             edited = st.data_editor(
-                csv_rows, key=f"ext_editor_{abs(hash((up.getvalue(), keep_text)))}", hide_index=True, num_rows="fixed",
+                csv_rows, key=f"ext_editor_{abs(hash((up.getvalue(), keep_text, P['key'], wave_pw if IS_WAVE else '')))}", hide_index=True, num_rows="fixed",
                 height=min(38 + 35 * len(csv_rows), 420), **FULL_WIDTH,
+                column_order=["Include", "Extension", "Name"] + (["Password"] if IS_WAVE else []) + ["Email"],
                 column_config={
                     "Include": st.column_config.CheckboxColumn("Include", width="small"),
                     "Extension": st.column_config.TextColumn("Extension", disabled=True, width="small"),
-                    "Name": st.column_config.TextColumn("Name", width="medium"),
-                    "Email": st.column_config.TextColumn("Email (for individual sends)", width="large"),
+                    "Name": st.column_config.TextColumn("Name", width="small" if IS_WAVE else "medium"),
+                    "Email": st.column_config.TextColumn("Email (for individual sends)", width="medium" if IS_WAVE else "large"),
+                    **col_cfg_extra,
                 })
+            if IS_WAVE:
+                pw_by_ext = {str(r["Extension"]): (r.get("Password") or "").strip() for r in edited if r.get("Include")}
             picked = [(str(r["Extension"]), ((r.get("Name") or "").strip(), (r.get("Email") or "").strip()))
                       for r in edited if r.get("Include")]
         with st.expander("Or type extensions in by hand", expanded=False):
@@ -689,71 +773,95 @@ with left:
         c1, c2 = st.columns(2)
         show_passwords = c1.toggle("Show passwords in the pack", value=True, key="w_showpw",
                                    help="Turn off to show 'Sent separately' instead, if you'd rather give passwords by phone.")
-        want_cards = c2.toggle("Make cut-out login cards", value=True, key="w_cards",
-                               disabled=not ext_pairs or len(ext_pairs) > CARD_LIMIT)
-        if len(ext_pairs) > CARD_LIMIT:
-            st.caption(f"Login cards are available for up to {CARD_LIMIT} extensions.")
+        want_cards, word = False, {}
+        if not IS_WAVE:
+            want_cards = c2.toggle("Make cut-out login cards", value=True, key="w_cards",
+                                   disabled=not ext_pairs or len(ext_pairs) > CARD_LIMIT)
+            if len(ext_pairs) > CARD_LIMIT:
+                st.caption(f"Login cards are available for up to {CARD_LIMIT} extensions.")
 
-        with st.expander("Edit the wording in the documents"):
-            word = {}
-            for key, label in (("rec", "Call recordings"), ("mgr", "Manager dashboard"), ("ai", "Staff AI portal")):
-                st.markdown(f"**{label}**")
-                c1, c2 = st.columns([1, 2])
-                word[f"{key}_title"] = c1.text_input("Name", DEFAULT_WORDING[f"{key}_title"], key=f"w_{key}_title")
-                word[f"{key}_desc"] = c2.text_input("One-line description", DEFAULT_WORDING[f"{key}_desc"], key=f"w_{key}_desc")
-                word[f"{key}_bullets"] = st.text_area("What they'll find (one per line)", DEFAULT_WORDING[f"{key}_bullets"],
-                                                      key=f"w_{key}_bullets", height=80)
+            with st.expander("Edit the wording in the documents"):
+                for key, label in (("rec", "Call recordings"), ("mgr", "Manager dashboard"), ("ai", "Staff AI portal")):
+                    st.markdown(f"**{label}**")
+                    c1, c2 = st.columns([1, 2])
+                    word[f"{key}_title"] = c1.text_input("Name", DEFAULT_WORDING[f"{key}_title"], key=f"w_{key}_title")
+                    word[f"{key}_desc"] = c2.text_input("One-line description", DEFAULT_WORDING[f"{key}_desc"], key=f"w_{key}_desc")
+                    word[f"{key}_bullets"] = st.text_area("What they'll find (one per line)", DEFAULT_WORDING[f"{key}_bullets"],
+                                                          key=f"w_{key}_bullets", height=80)
 
 # ---- validation -------------------------------------------------------------
+stub = file_stub(company)
+site_key = slug or stub
 missing = []
 if not company:
     missing.append("Company name")
-if not slug:
-    missing.append("Site name")
-if not rec_user or not rec_pass:
-    missing.append("Admin username and password")
-if mgr_url and not mgr_pass:
-    missing.append("Manager dashboard password")
+if IS_WAVE:
+    if not wave_host:
+        missing.append("Server address")
+    if not wave_pw:
+        missing.append("Password")
+else:
+    if not slug:
+        missing.append("Site name")
+    if not rec_user or not rec_pass:
+        missing.append("Admin username and password")
+    if mgr_url and not mgr_pass:
+        missing.append("Manager dashboard password")
 ready = not missing
 
-docs = {}
+docs, exts, data = {}, [], {}
 if ready:
-    exts = [(e, n, PW_PATTERN.replace("{slug}", slug).replace("{ext}", e)) for e, n in ext_pairs]
-    logo = LOGO_DARK
-    data = dict(
-        brand=BRAND, company=company, slug=slug, contact_name=contact_name,
+    common = dict(
+        theme=P["theme"], brand=P["brand"], company=company, contact_name=contact_name,
         date_str=dt.date.today().strftime("%-d %B %Y"),
-        support_email=SUPPORT_EMAIL, support_phone=SUPPORT_PHONE, website=WEBSITE,
-        logo_path=logo if os.path.exists(logo) else "",
-        rec_url=rec_url, rec_user=rec_user, rec_pass=rec_pass,
-        mgr_url=mgr_url, mgr_user=mgr_user, mgr_pass=mgr_pass,
-        ai_url=ai_url, pw_pattern=PW_PATTERN, exts=exts, show_passwords=show_passwords,
-        **{k: (lines(v) if k.endswith("_bullets") else v.strip()) for k, v in word.items()},
-    )
-    make_cards = bool(want_cards and exts and len(exts) <= CARD_LIMIT)
+        support_email=P["support_email"], support_phone=P["support_phone"], website=P["website"],
+        logo_path=P["logo"] if os.path.exists(P["logo"]) else "", show_passwords=show_passwords)
     try:
-        docs = build_documents(data, make_cards)
+        if IS_WAVE:
+            exts = [(e, n, pw_by_ext.get(e) or wave_pw) for e, n in ext_pairs]
+            data = dict(common, eyebrow="Wave softphone", download_url=WAVE_DOWNLOAD_URL,
+                        server_mobile=server_mobile, server_pc=server_pc, exts=exts)
+            docs = build_wave_documents(data)
+        else:
+            exts = [(e, n, PW_PATTERN.replace("{slug}", slug).replace("{ext}", e)) for e, n in ext_pairs]
+            data = dict(
+                common, slug=slug,
+                rec_url=rec_url, rec_user=rec_user, rec_pass=rec_pass,
+                mgr_url=mgr_url, mgr_user=mgr_user, mgr_pass=mgr_pass,
+                ai_url=ai_url, pw_pattern=PW_PATTERN, exts=exts,
+                **{k: (lines(v) if k.endswith("_bullets") else v.strip()) for k, v in word.items()},
+            )
+            docs = build_documents(data, bool(want_cards and exts and len(exts) <= CARD_LIMIT))
     except Exception as e:
         st.error(f"The documents could not be built: {e}")
         ready = False
 
-stub = file_stub(company)
-FILES = {
-    "manager": (f"{BRAND} Access Pack - {stub}.pdf", "Access Pack (main contact only)"),
-    "staff": (f"{BRAND} Staff Guide - {stub}.pdf", "Staff Guide (safe to share)"),
-    "cards": (f"{BRAND} Login Cards - {stub}.pdf", "Staff login cards"),
-}
+if IS_WAVE:
+    FILES = {
+        "manager": (f"Wave Rollout Pack - {stub}.pdf", "Rollout Pack (main contact only)"),
+        "staff": (f"Wave Setup Guide - {stub}.pdf", "Setup Guide (safe to share)"),
+    }
+    NOTE_TITLE = "Wave onboarding sent"
+else:
+    FILES = {
+        "manager": (f"{BRAND} Access Pack - {stub}.pdf", "Access Pack (main contact only)"),
+        "staff": (f"{BRAND} Staff Guide - {stub}.pdf", "Staff Guide (safe to share)"),
+        "cards": (f"{BRAND} Login Cards - {stub}.pdf", "Staff login cards"),
+    }
+    NOTE_TITLE = f"{BRAND} onboarding sent"
 
 # ---- summary (right) --------------------------------------------------------
 with right:
     with st.container(key="card-summary"):
         section_header("✓", "Pack summary", "Updates as you type")
-        rows = [
-            ("Customer", company or "-"),
-            ("Site", f"{slug}.{DEFAULT_DOMAIN}" if slug else "-"),
-            ("Main contact", contact_name or "-"),
-            ("Logins included", "3 portals" if mgr_url else "2 portals"),
-            ("Staff extensions", f"{len(ext_pairs):,}" if ext_pairs else "None listed"),
+        rows = [("Product", product), ("Customer", company or "-")]
+        if IS_WAVE:
+            rows += [("Server", wave_host or "-"), ("Main contact", contact_name or "-")]
+        else:
+            rows += [("Site", f"{slug}.{DEFAULT_DOMAIN}" if slug else "-"), ("Main contact", contact_name or "-"),
+                     ("Logins included", "3 portals" if mgr_url else "2 portals")]
+        rows += [
+            ("Wave users" if IS_WAVE else "Staff extensions", f"{len(ext_pairs):,}" if ext_pairs else "None listed"),
             ("With an email address", f"{len(email_by_ext):,}" if ext_pairs else "-"),
             ("Zoho account", ss.zoho_account.get("Account_Name", "") if ss.zoho_account else "Not linked"),
         ]
@@ -764,7 +872,7 @@ with right:
                         + "".join(chip("Needed: " + m, "warn") for m in missing) + "</div>")
         else:
             notes = []
-            if not mgr_url:
+            if not IS_WAVE and not mgr_url:
                 notes.append(chip("Manager dashboard left out", "warn"))
             if not ext_pairs:
                 notes.append(chip("No extension list", "warn"))
@@ -780,10 +888,15 @@ with right:
             if ext_pairs:
                 buf = io.StringIO()
                 wr = csv.writer(buf)
-                wr.writerow(["Extension / username", "Name", "Password", "Web address"])
-                for e, n, p in exts:
-                    wr.writerow([e, n, p, ai_url])
-                st.download_button("Download login list (CSV)", buf.getvalue(), file_name=f"{stub}-staff-logins.csv",
+                if IS_WAVE:
+                    wr.writerow(["Extension / user", "Name", "Password", "Server (mobile)", "Server (PC)"])
+                    for e, n, p in exts:
+                        wr.writerow([e, n, p, server_mobile, server_pc])
+                else:
+                    wr.writerow(["Extension / username", "Name", "Password", "Web address"])
+                    for e, n, p in exts:
+                        wr.writerow([e, n, p, ai_url])
+                st.download_button("Download login list (CSV)", buf.getvalue(), file_name=f"{stub}-{'wave' if IS_WAVE else 'staff'}-logins.csv",
                                    mime="text/csv", key="dl_csv", **FULL_WIDTH)
 
 # ---- 04 Preview -------------------------------------------------------------
@@ -791,7 +904,7 @@ with st.container(key="card-docs"):
     section_header("04", "Preview", "Check the documents before they go out")
     if not ready:
         render_html(f'<div class="pe-empty"><div class="ic">{ICON_PHONE}</div><div class="t">Nothing to preview yet</div>'
-                    '<ol><li>Enter the company and site name</li><li>Add the admin password</li>'
+                    '<ol><li>Enter the company details</li><li>Add the login details in section 02</li>'
                     '<li>List the staff extensions</li></ol></div>')
     else:
         tabs = st.tabs([FILES[k][1] for k in docs])
@@ -808,7 +921,7 @@ with st.container(key="card-docs"):
                     st.caption("Preview unavailable - use the download button to open the PDF.")
 
 # ---- 05 Send & log ----------------------------------------------------------
-sent = ss.get("sent_for") == (company, contact_email)
+sent = ss.get("sent_for") == (P["key"], company, contact_email)
 with st.container(key="card-send"):
     section_header("05", "Send from Zoho", "Email the main contact, each member of staff, or both - all logged on the account")
     if not ZOHO_READY:
@@ -827,12 +940,13 @@ with st.container(key="card-send"):
             froms = zoho_from_addresses(sec("ZOHO_REFRESH_TOKEN")[-6:])
             c1, c2 = st.columns(2)
             if froms:
-                idx = c1.selectbox("Send from", range(len(froms)),
+                idx = c1.selectbox("Send from", range(len(froms)), key=f"main_from_{P['key']}",
+                                   index=preferred_from(froms, IS_WAVE),
                                    format_func=lambda i: f"{froms[i].get('email')} ({froms[i].get('user_name', '')})")
                 sender = froms[idx]
             else:
                 manual = c1.text_input("Send from (must be an address set up in Zoho CRM)", key="from_manual")
-                sender = {"email": manual.strip(), "user_name": BRAND, "type": ""}
+                sender = {"email": manual.strip(), "user_name": P["brand"], "type": ""}
             c2.text_input("Send to", value=f"{contact_name} <{contact_email}>" if contact_email else "", disabled=True)
             if not contact:
                 st.warning("The main contact's email doesn't match a contact on this Zoho account. Pick a contact in "
@@ -840,25 +954,41 @@ with st.container(key="card-send"):
 
             first = contact_name.split(" ")[0] if contact_name else "there"
             attach_keys = st.multiselect("Attach", list(docs), default=[k for k in ("manager", "staff") if k in docs],
+                                         key=f"attach_{P['key']}",
                                          format_func=lambda k: FILES[k][1])
-            default_body = (
-                f"Hi {first},\n\n"
-                f"Great news - your {BRAND} service for {company} is now live.\n\n"
-                f"Attached is everything you need to get started:\n\n"
-                + ("- Access Pack - your own copy, with the administrator"
-                   + (" and manager dashboard" if mgr_url else "") + " logins. Please keep this one to yourself.\n"
-                   if "manager" in attach_keys else "")
-                + ("- Staff Guide - a one-page guide you can forward to your whole team. It only covers their own personal login.\n"
-                   if "staff" in attach_keys else "")
-                + ("- Login Cards - a printable card for each member of staff.\n" if "cards" in attach_keys else "")
-                + f"\nIf you have any questions at all, just reply to this email.\n\nKind regards\n{EMAIL_SIGN_OFF}"
-            )
-            sig = str(abs(hash((company, first, tuple(attach_keys), bool(mgr_url)))))
-            subject = st.text_input("Subject", value=f"Welcome to {BRAND} - your login details for {company}", key=f"subj_{sig}")
+            if IS_WAVE:
+                default_subject = f"Wave is ready for {company} - your rollout pack"
+                default_body = (
+                    f"Hi {first},\n\n"
+                    f"Wave - the softphone app for your phone system - is now ready for {company}. It puts each person's "
+                    f"office extension on their mobile or computer.\n\n"
+                    f"Attached is everything you need to get your team set up:\n\n"
+                    + ("- Rollout Pack - your own copy, with the server details and every user's sign-in. Please keep this one to yourself.\n"
+                       if "manager" in attach_keys else "")
+                    + ("- Setup Guide - a one-page guide you can forward to your whole team. It shows how to download Wave and sign in.\n"
+                       if "staff" in attach_keys else "")
+                    + f"\nIf you have any questions at all, just reply to this email.\n\nKind regards - {P['sign_off']}"
+                )
+            else:
+                default_subject = f"Welcome to {BRAND} - your login details for {company}"
+                default_body = (
+                    f"Hi {first},\n\n"
+                    f"Great news - your {BRAND} service for {company} is now live.\n\n"
+                    f"Attached is everything you need to get started:\n\n"
+                    + ("- Access Pack - your own copy, with the administrator"
+                       + (" and manager dashboard" if mgr_url else "") + " logins. Please keep this one to yourself.\n"
+                       if "manager" in attach_keys else "")
+                    + ("- Staff Guide - a one-page guide you can forward to your whole team. It only covers their own personal login.\n"
+                       if "staff" in attach_keys else "")
+                    + ("- Login Cards - a printable card for each member of staff.\n" if "cards" in attach_keys else "")
+                    + f"\nIf you have any questions at all, just reply to this email.\n\nKind regards\n{EMAIL_SIGN_OFF}"
+                )
+            sig = str(abs(hash((P["key"], company, first, tuple(attach_keys), bool(mgr_url)))))
+            subject = st.text_input("Subject", value=default_subject, key=f"subj_{sig}")
             body = st.text_area("Message", value=default_body, height=280, key=f"body_{sig}")
             c1, c2 = st.columns(2)
-            add_note = c1.toggle("Add a note to the account", value=True, key="w_note")
-            file_docs = c2.toggle("Save the PDFs on the account", value=True, key="w_file",
+            add_note = c1.toggle("Add a note to the account", value=True, key=f"w_note_{P['key']}")
+            file_docs = c2.toggle("Save the PDFs on the account", value=True, key=f"w_file_{P['key']}",
                                   help="Stores the attached PDFs under Attachments on the Zoho account. "
                                        "Turn off if you don't want passwords held in the CRM.")
 
@@ -867,7 +997,8 @@ with st.container(key="card-send"):
                 st.success(f"Sent to {contact_email} and logged on {ss.zoho_account.get('Account_Name', '')}.")
                 for line in ss.get("sent_log", []):
                     st.caption(line)
-            if st.button("Send again" if sent else "Send and log in Zoho", type="primary", disabled=not can_send):
+            if st.button("Send again" if sent else "Send and log in Zoho", type="primary", disabled=not can_send,
+                         key=f"main_send_{P['key']}"):
                 log = []
                 try:
                     with st.status("Sending through Zoho...", expanded=True) as status:
@@ -877,7 +1008,7 @@ with st.container(key="card-send"):
                         paras = "".join(
                             f'<p style="margin:0 0 12px">{esc(p).replace(chr(10), "<br>")}</p>' for p in body.strip().split("\n\n"))
                         payload = {
-                            "from": {"user_name": sender.get("user_name") or BRAND, "email": sender["email"]},
+                            "from": {"user_name": sender.get("user_name") or P["brand"], "email": sender["email"]},
                             "to": [{"user_name": contact_name or contact_email, "email": contact_email}],
                             "subject": subject.strip(),
                             "content": f'<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1B2333;line-height:1.5">{paras}</div>',
@@ -893,11 +1024,11 @@ with st.container(key="card-send"):
                         try:
                             note_id = zoho_add_note(
                                 acc_id, NOTE_TITLE,
-                                f"{BRAND} onboarding sent to {contact_name} ({contact_email}) on "
+                                f"{P['product']} onboarding sent to {contact_name} ({contact_email}) on "
                                 f"{dt.datetime.now().strftime('%d/%m/%Y %H:%M')} from {sender['email']}.\n"
-                                f"Site: https://{slug}.{DEFAULT_DOMAIN}/\n"
-                                f"Documents: {', '.join(FILES[k][1] for k in attach_keys)}\n"
-                                f"Staff extensions listed: {len(ext_pairs)}")
+                                + (f"Wave server: {server_mobile}\n" if IS_WAVE else f"Site: https://{slug}.{DEFAULT_DOMAIN}/\n")
+                                + f"Documents: {', '.join(FILES[k][1] for k in attach_keys)}\n"
+                                f"{'Wave users' if IS_WAVE else 'Staff extensions'} listed: {len(ext_pairs)}")
                             log.append(f"Note \"{NOTE_TITLE}\" added to the account and confirmed (note ID {note_id}).")
                         except Exception as note_err:
                             log.append(f"NOTE NOT ADDED - Zoho said: {note_err}")
@@ -907,7 +1038,7 @@ with st.container(key="card-send"):
                                 zoho_attach(acc_id, FILES[k][0], docs[k])
                             log.append("PDFs saved under the account's attachments.")
                         status.update(label="Sent and logged", state="complete", expanded=False)
-                    ss.sent_for = (company, contact_email)
+                    ss.sent_for = (P["key"], company, contact_email)
                     ss.sent_log = log
                     st.rerun()
                 except Exception as e:
@@ -921,41 +1052,62 @@ with st.container(key="card-send"):
                 st.caption("No staff email addresses yet. Upload the extensions CSV in section 03 (it includes each "
                            "person's email) or add them in the table there.")
             else:
+                if IS_WAVE:
+                    staff_subject_default = "Your Wave app is ready - how to get set up"
+                    staff_body_default = (
+                        "Hi {first_name},\n\n"
+                        f"Wave is the softphone app for the {company} phone system. It puts your office extension on your "
+                        "mobile or computer, so you can make and take work calls wherever you are.\n\n"
+                        "1. Download Wave: {download}\n"
+                        "2. Server address: {server_mobile} on your mobile, or {server_pc} on a PC or Mac\n"
+                        "3. Sign in - User / extension: {extension}   Password: {password}\n\n"
+                        "Your one-page guide is attached. If you have any trouble signing in, speak to your manager first.\n\n"
+                        f"Kind regards - {P['sign_off']}")
+                    staff_extra = {"download": WAVE_DOWNLOAD_URL, "server_mobile": server_mobile, "server_pc": server_pc}
+                    staff_address = server_mobile
+                else:
+                    staff_subject_default = f"Your {BRAND} login"
+                    staff_body_default = (
+                        "Hi {first_name},\n\n"
+                        f"{company} now uses {BRAND}, and your personal login is ready.\n\n"
+                        "Web address: {address}\nUsername: {extension}\nPassword: {password}\n\n"
+                        "Your one-page guide is attached. If you have any trouble logging in, speak to your manager first.\n\n"
+                        f"Kind regards\n{EMAIL_SIGN_OFF}")
+                    staff_extra = {}
+                    staff_address = ai_url
                 st.caption(f"Sends each person their own login and a personal one-page guide. {len(with_email)} of "
                            f"{len(exts)} extensions have an email address. Each email is logged on the "
                            f"{ss.zoho_account.get('Account_Name', '')} account.")
                 sfroms = zoho_from_addresses(sec("ZOHO_REFRESH_TOKEN")[-6:])
                 if sfroms:
-                    sidx = st.selectbox("Send from", range(len(sfroms)), key="staff_from",
+                    sidx = st.selectbox("Send from", range(len(sfroms)), key=f"staff_from_{P['key']}",
+                                        index=preferred_from(sfroms, IS_WAVE),
                                         format_func=lambda i: f"{sfroms[i].get('email')} ({sfroms[i].get('user_name', '')})")
                     ssender = sfroms[sidx]
                 else:
                     smanual = st.text_input("Send from (must be an address set up in Zoho CRM)", key="staff_from_manual")
-                    ssender = {"email": smanual.strip(), "user_name": BRAND, "type": ""}
+                    ssender = {"email": smanual.strip(), "user_name": P["brand"], "type": ""}
                 done = ss.setdefault("staff_sent", {})
-                label = {e: f"{e} - {n or 'No name'} - {email_by_ext[e]}" + ("  (sent)" if (slug, e) in done else "")
+                label = {e: f"{e} - {n or 'No name'} - {email_by_ext[e]}" + ("  (sent)" if (P["key"], site_key, e) in done else "")
                          for e, n, p in with_email}
                 chosen = st.multiselect("Send to", [e for e, _, _ in with_email],
-                                        default=[e for e, _, _ in with_email if (slug, e) not in done],
-                                        format_func=lambda e: label.get(e, e), key=f"staff_pick_{slug}_{len(with_email)}")
-                s_subject = st.text_input("Subject", value=f"Your {BRAND} login", key="staff_subject")
+                                        default=[e for e, _, _ in with_email if (P["key"], site_key, e) not in done],
+                                        format_func=lambda e: label.get(e, e),
+                                        key=f"staff_pick_{P['key']}_{site_key}_{len(with_email)}")
+                s_subject = st.text_input("Subject", value=staff_subject_default, key=f"staff_subject_{P['key']}")
                 s_body = st.text_area(
-                    "Message - the words in {brackets} are filled in for each person", height=260, key="staff_body",
-                    value=("Hi {first_name},\n\n"
-                           f"{company} now uses {BRAND}, and your personal login is ready.\n\n"
-                           "Web address: {address}\nUsername: {extension}\nPassword: {password}\n\n"
-                           "Your one-page guide is attached. If you have any trouble logging in, speak to your manager first.\n\n"
-                           f"Kind regards\n{EMAIL_SIGN_OFF}"))
+                    "Message - the words in {brackets} are filled in for each person", height=260,
+                    key=f"staff_body_{P['key']}_{abs(hash(company))}", value=staff_body_default)
                 c1, c2 = st.columns(2)
-                s_attach = c1.toggle("Attach their personal guide (PDF)", value=True, key="w_staff_attach")
-                s_note = c2.toggle("Add a note to the account", value=True, key="w_staff_note")
+                s_attach = c1.toggle("Attach their personal guide (PDF)", value=True, key=f"w_staff_attach_{P['key']}")
+                s_note = c2.toggle("Add a note to the account", value=True, key=f"w_staff_note_{P['key']}")
                 if chosen:
                     e0 = chosen[0]
-                    n0 = dict((e, n) for e, n, _ in exts).get(e0, "")
+                    n0, p0 = {e: (n, p) for e, n, p in exts}.get(e0, ("", ""))
                     with st.expander(f"Preview the email for {n0 or e0}"):
-                        st.text(fill_staff_template(s_body, n0, e0, PW_PATTERN.replace("{slug}", slug).replace("{ext}", e0), ai_url))
+                        st.text(fill_staff_template(s_body, n0, e0, p0, staff_address, staff_extra))
                 if st.button(f"Send {len(chosen)} individual email{'s' if len(chosen) != 1 else ''}", type="primary",
-                             disabled=not (chosen and ssender.get("email") and s_subject.strip()), key="staff_send"):
+                             disabled=not (chosen and ssender.get("email") and s_subject.strip()), key=f"staff_send_{P['key']}"):
                     acc_id = ss.zoho_account["id"]
                     ok, failed = [], []
                     bar = st.progress(0.0, text="Sending...")
@@ -965,37 +1117,42 @@ with st.container(key="card-send"):
                         to = email_by_ext[e]
                         bar.progress(i / len(chosen), text=f"Sending to {n or e} ({i + 1} of {len(chosen)})")
                         try:
-                            text = fill_staff_template(s_body, n, e, p, ai_url)
+                            text = fill_staff_template(s_body, n, e, p, staff_address, staff_extra)
                             paras = "".join(f'<p style="margin:0 0 12px">{esc(x).replace(chr(10), "<br>")}</p>'
                                             for x in text.strip().split("\n\n"))
                             payload = {
-                                "from": {"user_name": ssender.get("user_name") or BRAND, "email": ssender["email"]},
+                                "from": {"user_name": ssender.get("user_name") or P["brand"], "email": ssender["email"]},
                                 "to": [{"user_name": n or to, "email": to}],
                                 "subject": s_subject.strip(),
                                 "content": f'<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1B2333;line-height:1.5">{paras}</div>',
                                 "mail_format": "html",
                             }
                             if s_attach:
-                                pdf = pdfs.build_staff_guide(data, person=(e, n, p))
-                                payload["attachments"] = [{"id": zoho_upload_file(f"{BRAND} login - {file_stub(n or e)}.pdf", pdf)}]
+                                if IS_WAVE:
+                                    pdf = pdfs.build_wave_user_guide(data, person=(e, n, p))
+                                    pdf_name = f"Wave setup guide - {file_stub(n or e)}.pdf"
+                                else:
+                                    pdf = pdfs.build_staff_guide(data, person=(e, n, p))
+                                    pdf_name = f"{BRAND} login - {file_stub(n or e)}.pdf"
+                                payload["attachments"] = [{"id": zoho_upload_file(pdf_name, pdf)}]
                             if ssender.get("type") == "org_email":
                                 payload["org_email"] = True
                             zoho_send_mail("Accounts", acc_id, payload)
                             ok.append((e, n, to))
-                            done[(slug, e)] = True
+                            done[(P["key"], site_key, e)] = True
                         except Exception as err:
                             failed.append((e, n, to, str(err)))
                     bar.progress(1.0, text="Finished")
                     if ok and s_note:
                         try:
-                            zoho_add_note(acc_id, f"{BRAND} staff logins sent",
-                                          f"Individual {BRAND} login emails sent on {dt.datetime.now().strftime('%d/%m/%Y %H:%M')} "
+                            zoho_add_note(acc_id, f"{P['product']} staff logins sent",
+                                          f"Individual {P['product']} login emails sent on {dt.datetime.now().strftime('%d/%m/%Y %H:%M')} "
                                           f"from {ssender['email']} to {len(ok)} staff:\n"
                                           + "\n".join(f"{e} - {n or 'No name'} - {to}" for e, n, to in ok))
                         except Exception as err:
                             st.warning(f"Emails went, but the note could not be added: {err}")
-                    ss.staff_result = (ok, failed)
-                res = ss.get("staff_result")
+                    ss[f"staff_result_{P['key']}"] = (ok, failed)
+                res = ss.get(f"staff_result_{P['key']}")
                 if res:
                     ok, failed = res
                     if ok:
@@ -1007,17 +1164,22 @@ with st.container(key="card-send"):
 
 
 # ---- hero (filled last so the stepper reflects this run) ---------------------
-steps = [("Customer", bool(company and slug)), ("Logins", bool(rec_pass and (not mgr_url or mgr_pass))),
-         ("Documents", ready), ("Sent", (sent or bool(ss.get("staff_result") and ss.staff_result[0])) and ready)]
+_staff_res = ss.get(f"staff_result_{P['key']}")
+_logins_done = bool(wave_host and wave_pw) if IS_WAVE else bool(rec_pass and (not mgr_url or mgr_pass))
+steps = [("Customer", bool(company and (IS_WAVE or slug))), ("Logins", _logins_done),
+         ("Documents", ready), ("Sent", (sent or bool(_staff_res and _staff_res[0])) and ready)]
 active = next((i for i, (_, done) in enumerate(steps) if not done), len(steps))
 parts = []
 for i, (label, done) in enumerate(steps):
     cls = "done" if done else ("active" if i == active else "")
     parts.append(f'<div class="pe-step {cls}"><div class="num">{"✓" if done else i + 1}</div>{label}</div>')
+_sub = ("Enter the phone system's Wave details to create the customer's Rollout Pack and a Setup Guide they can share, "
+        "then send and log it through Zoho." if IS_WAVE else
+        "Enter a new site's details to create the customer's Access Pack and a Staff Guide they can share, "
+        "then send and log it through Zoho.")
 render_html(
     '<div class="pe-hero"><div>'
-    f'<div class="pe-eyebrow"><span class="dot"></span>{esc(BRAND)} · Customer onboarding</div>'
+    f'<div class="pe-eyebrow"><span class="dot"></span>{esc(P["product"])} · Customer onboarding</div>'
     '<div class="pe-title">Welcome packs, <span>ready to send</span></div>'
-    '<div class="pe-sub">Enter a new site\'s details to create the customer\'s Access Pack and a Staff Guide they can share, '
-    'then send and log it through Zoho.</div></div>'
+    f'<div class="pe-sub">{esc(_sub)}</div></div>'
     f'<div class="pe-stepper">{"<div class=pe-step-sep></div>".join(parts)}</div></div>', hero)
