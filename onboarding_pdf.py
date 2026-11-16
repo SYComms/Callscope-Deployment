@@ -86,15 +86,21 @@ def _fit(c, text, font, size, max_w, min_size=6.5):
 class Doc:
     """Small page/cursor helper around a ReportLab canvas."""
 
-    def __init__(self, d, title, subtitle, confidential):
+    def __init__(self, d, title, subtitle, confidential, canvas_=None, follow=False):
         self.d = d
         self.title = title
         self.subtitle = subtitle
         self.confidential = confidential
-        self.buf = io.BytesIO()
-        self.c = canvas.Canvas(self.buf, pagesize=A4)
-        self.c.setTitle(f"{d['brand']} - {title} - {d['company']}")
-        self.c.setAuthor(d["brand"])
+        self.owns_canvas = canvas_ is None
+        if self.owns_canvas:
+            self.buf = io.BytesIO()
+            self.c = canvas.Canvas(self.buf, pagesize=A4)
+            self.c.setTitle(f"{d['brand']} - {title} - {d['company']}")
+            self.c.setAuthor(d["brand"])
+        else:
+            self.c = canvas_
+            if follow:
+                self.c.showPage()
         self.page = 0
         self.y = 0
         self.new_page(first=True)
@@ -112,7 +118,7 @@ class Doc:
 
     def _hero(self):
         c, d = self.c, self.d
-        bh = 178
+        bh = 164
         c.setFillColor(NAVY)
         c.rect(0, H - bh, W, bh, stroke=0, fill=1)
         # soft glows
@@ -152,10 +158,10 @@ class Doc:
         c.setFillColor(white)
         size = _fit(c, self.title, BOLD, 29, CW)
         c.setFont(BOLD, size)
-        c.drawString(M, H - 104, self.title)
+        c.drawString(M, H - 96, self.title)
         c.setFillColor(HexColor("#B8C1D9"))
         c.setFont(REG, 12)
-        c.drawString(M, H - 126, self.subtitle)
+        c.drawString(M, H - 116, self.subtitle)
 
         # meta row
         c.setFont(BOLD, 6.8)
@@ -167,9 +173,9 @@ class Doc:
         xx = M
         for label, val in cols:
             c.setFont(BOLD, 6.8); c.setFillColor(HexColor("#7F8BA6"))
-            c.drawString(xx, H - 151, label, charSpace=1.1)
+            c.drawString(xx, H - 139, label, charSpace=1.1)
             c.setFont(BOLD, 9.5); c.setFillColor(white)
-            c.drawString(xx, H - 164, val[:44])
+            c.drawString(xx, H - 152, val[:44])
             xx += max(130, c.stringWidth(val[:44], BOLD, 9.5) + 34)
         self.y = H - bh - 4 - 24
 
@@ -206,7 +212,7 @@ class Doc:
             c.drawCentredString(W / 2, 14, "CONFIDENTIAL - CONTAINS LOGIN DETAILS - PLEASE DO NOT FORWARD", charSpace=0.8)
 
     def need(self, h):
-        if self.y - h < 50:
+        if self.y - h < 46:
             self.new_page()
 
     # ---- content blocks -------------------------------------------------
@@ -372,7 +378,7 @@ class Doc:
         body = []
         for ln in lines:
             body += simpleSplit(ln, REG, 9.6, CW - 78)
-        h = 18 + 16 + len(body) * 13.5 + (36 if value else 0) + 6
+        h = 18 + 16 + len(body) * 13.5 + (36 if value else 0) + 12
         self.need(h + 9)
         top = self.y
         c.setFillColor(CARD); c.setStrokeColor(BORDER); c.setLineWidth(0.8)
@@ -423,7 +429,8 @@ class Doc:
         body = []
         for ln in lines:
             body += simpleSplit(ln, REG, 9.6, tw)
-        h = 18 + 16 + len(body) * 13.5 + len(fields) * 35 + 6
+        gap = 37                                   # distance from one box to the next
+        h = 44 + len(body) * 13.5 + ((len(fields) - 1) * gap + 33 + 11 if fields else 2)
         if qr_url:
             h = max(h, qr_size + 46)
         self.need(h + 9)
@@ -444,7 +451,7 @@ class Doc:
         y += 4
         for label, value, link in fields:
             self.field(x, y, tw, label, value, link=link)
-            y -= 35
+            y -= gap
         if qr_url:
             qx = M + CW - 18 - qr_size - 5
             qy = top - 20 - qr_size
@@ -535,6 +542,8 @@ class Doc:
         self.y = top - h - 14
 
     def finish(self):
+        if not self.owns_canvas:
+            return None
         self.c.save()
         return self.buf.getvalue()
 
@@ -706,26 +715,44 @@ def _wave_steps(doc, d, ext_value, pw_value, personal):
                     [("User / extension", ext_value, None), ("Password", pw_value, None)])
 
 
-@themed
-def build_wave_user_guide(d, person=None):
-    """Generic guide (no password) or, with person=(extension, name, password), a personal copy."""
+def _wave_guide(d, person=None, canvas_=None, follow=False):
+    intro = (f"Wave turns your mobile or computer into your {d['company']} phone - make and take work calls "
+             f"on your office extension wherever you are. Setting it up takes three steps.")
     if person:
         ext, name, pw = person
-        doc = Doc(d, "Get started with Wave", f"Personal setup guide for {name}" if name else f"Setup guide for extension {ext}", False)
+        doc = Doc(d, "Get started with Wave", f"Personal setup guide for {name}" if name else f"Setup guide for extension {ext}",
+                  False, canvas_=canvas_, follow=follow)
         first = (name or "").split(" ")[0]
-        doc.para(f"Hi {first}," if first else "Hello,", size=11.5, font=BOLD, gap=4)
-        doc.para(f"Wave turns your mobile or computer into your {d['company']} phone - make and take work calls "
-                 f"on your office extension wherever you are. Setting it up takes three steps.", size=10.2, color=MUTED, gap=6)
+        doc.para(f"Hi {first}," if first else "Hello,", size=11.5, font=BOLD, gap=3)
+        doc.para(intro, size=10.2, color=MUTED, gap=6)
         _wave_steps(doc, d, ext, pw, True)
     else:
-        doc = Doc(d, "Get started with Wave", f"Setup guide for {d['company']}", False)
-        doc.para(f"Wave turns your mobile or computer into your {d['company']} phone - make and take work calls "
-                 f"on your office extension wherever you are. Setting it up takes three steps.", size=10.2, color=MUTED, gap=10)
+        doc = Doc(d, "Get started with Wave", f"Setup guide for {d['company']}", False, canvas_=canvas_, follow=follow)
+        doc.para(intro, size=10.2, color=MUTED, gap=8)
         _wave_steps(doc, d, "Your extension number", "Provided by your manager", False)
-    doc.callout("Two quick tips", "When Wave asks, allow notifications and the microphone - otherwise calls can't ring "
-                "or be heard. Your login is personal, so please don't share it with colleagues.", "indigo")
+    doc.callout("Two quick tips", "Allow notifications and the microphone when Wave asks, so calls can ring. "
+                "Keep your login to yourself.", "indigo")
     doc.help_box("Any trouble signing in? Speak to your manager, or contact us.")
-    return doc.finish()
+    return doc
+
+
+@themed
+def build_wave_user_guide(d, person=None):
+    """Blank guide (no login filled in) or, with person=(extension, name, password), a personal copy."""
+    return _wave_guide(d, person).finish()
+
+
+@themed
+def build_wave_personal_set(d):
+    """One PDF holding every user's personal guide, one page each, with their extension and password filled in."""
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    c.setTitle(f"Wave personal setup guides - {d['company']}")
+    c.setAuthor(d["brand"])
+    for i, person in enumerate(d.get("exts") or []):
+        _wave_guide(d, person, canvas_=c, follow=i > 0)
+    c.save()
+    return buf.getvalue()
 
 
 @themed
