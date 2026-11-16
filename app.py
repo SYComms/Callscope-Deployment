@@ -533,7 +533,11 @@ def build_documents(d, want_cards):
 
 @st.cache_data(show_spinner=False, max_entries=20)
 def build_wave_documents(d):
-    return {"manager": pdfs.build_wave_admin_pack(d), "staff": pdfs.build_wave_user_guide(d)}
+    out = {"manager": pdfs.build_wave_admin_pack(d)}
+    if d.get("exts") and len(d["exts"]) <= CARD_LIMIT:
+        out["personal"] = pdfs.build_wave_personal_set(d)      # every user's own guide, login filled in
+    out["staff"] = pdfs.build_wave_user_guide(d)               # blank version, no login shown
+    return out
 
 
 @st.cache_data(show_spinner=False, max_entries=20)
@@ -839,7 +843,8 @@ if ready:
 if IS_WAVE:
     FILES = {
         "manager": (f"Wave Rollout Pack - {stub}.pdf", "Rollout Pack (main contact only)"),
-        "staff": (f"Wave Setup Guide - {stub}.pdf", "Setup Guide (safe to share)"),
+        "personal": (f"Wave Personal Setup Guides - {stub}.pdf", "Personal guides (one page per user, logins filled in)"),
+        "staff": (f"Wave Setup Guide - {stub}.pdf", "Blank Setup Guide (no logins, safe to share)"),
     }
     NOTE_TITLE = "Wave onboarding sent"
 else:
@@ -880,7 +885,7 @@ with right:
                 notes.append(chip("Passwords hidden", "accent"))
             notes.append(chip("Documents ready", "good"))
             render_html('<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">' + "".join(notes) + "</div>")
-            for key in ("manager", "staff", "cards"):
+            for key in ("manager", "personal", "staff", "cards"):
                 if key in docs:
                     st.download_button(f"Download {FILES[key][1]}", docs[key], file_name=FILES[key][0],
                                        mime="application/pdf", key=f"dl_{key}",
@@ -953,7 +958,8 @@ with st.container(key="card-send"):
                            "section 01 - Zoho only sends to addresses held on a record.")
 
             first = contact_name.split(" ")[0] if contact_name else "there"
-            attach_keys = st.multiselect("Attach", list(docs), default=[k for k in ("manager", "staff") if k in docs],
+            _default_attach = ["manager", "personal" if "personal" in docs else "staff"] if IS_WAVE else ["manager", "staff"]
+            attach_keys = st.multiselect("Attach", list(docs), default=[k for k in _default_attach if k in docs],
                                          key=f"attach_{P['key']}",
                                          format_func=lambda k: FILES[k][1])
             if IS_WAVE:
@@ -965,8 +971,10 @@ with st.container(key="card-send"):
                     f"Attached is everything you need to get your team set up:\n\n"
                     + ("- Rollout Pack - your own copy, with the server details and every user's sign-in. Please keep this one to yourself.\n"
                        if "manager" in attach_keys else "")
-                    + ("- Setup Guide - a one-page guide you can forward to your whole team. It shows how to download Wave and sign in.\n"
-                       if "staff" in attach_keys else "")
+                    + ("- Personal Guides - one page for each person, with their own extension number and password filled in. "
+                       "Print them or forward each page to the right person.\n" if "personal" in attach_keys else "")
+                    + ("- Setup Guide - a one-page guide you can forward to your whole team. It shows how to download Wave and "
+                       "sign in, without any passwords on it.\n" if "staff" in attach_keys else "")
                     + f"\nIf you have any questions at all, just reply to this email.\n\nKind regards - {P['sign_off']}"
                 )
             else:
